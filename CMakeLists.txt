@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(TenClaw LANGUAGES C CXX)
+project(TenClaw VERSION 0.1.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -66,8 +66,10 @@ set(SOURCES
     src/net/net_backend.cpp
 )
 
+configure_file(src/version.h.in ${CMAKE_CURRENT_BINARY_DIR}/version.h)
+
 add_executable(TenClaw ${SOURCES})
-target_include_directories(TenClaw PRIVATE src/)
+target_include_directories(TenClaw PRIVATE src/ ${CMAKE_CURRENT_BINARY_DIR})
 
 target_include_directories(TenClaw PRIVATE ${zlib_SOURCE_DIR} ${zlib_BINARY_DIR})
 target_include_directories(TenClaw PRIVATE ${LWIP_INCLUDE_DIRS})

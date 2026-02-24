@@ -8,6 +8,8 @@
 #include "device/timer/i8254_pit.h"
 #include "device/rtc/cmos_rtc.h"
 #include "device/irq/ioapic.h"
+#include "device/irq/i8259_pic.h"
+#include "device/pci/pci_host.h"
 #include "device/acpi/acpi_pm.h"
 #include "device/virtio/virtio_mmio.h"
 #include "device/virtio/virtio_blk.h"
@@ -65,7 +67,11 @@ private:
     SystemControlB sys_ctrl_b_;
     CmosRtc rtc_;
     IoApic ioapic_;
+    I8259Pic pic_master_;
+    I8259Pic pic_slave_;
+    PciHostBridge pci_host_;
     AcpiPm acpi_pm_;
+    Device port_sink_;  // absorbs POST (0x80), DMA page (0x87), etc.
 
     // VirtIO block device (optional)
     std::unique_ptr<VirtioBlkDevice> virtio_blk_;

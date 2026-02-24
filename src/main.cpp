@@ -1,10 +1,16 @@
 #include "vmm/vm.h"
+#include "version.h"
 #include <cstdlib>
 #include <cstring>
 
+static void PrintVersion() {
+    fprintf(stderr, "TenClaw v" TENCLAW_VERSION "\n");
+}
+
 static void PrintUsage(const char* prog) {
+    PrintVersion();
     fprintf(stderr,
-        "Usage: %s --kernel <path> [options]\n"
+        "\nUsage: %s --kernel <path> [options]\n"
         "\n"
         "Options:\n"
         "  --kernel <path>    Path to vmlinuz (required)\n"
@@ -15,6 +21,7 @@ static void PrintUsage(const char* prog) {
         "  --memory <MB>      Guest RAM in MB (default: 256)\n"
         "  --net              Enable virtio-net with NAT networking\n"
         "  --forward H:G      Port forward host:H -> guest:G (repeatable)\n"
+        "  --version          Show version\n"
         "  --help             Show this help\n",
         prog);
 }
@@ -61,6 +68,9 @@ int main(int argc, char* argv[]) {
                 fprintf(stderr, "Invalid --forward format: %s (expected H:G)\n", v);
                 return 1;
             }
+        } else if (Arg("--version") || Arg("-v")) {
+            PrintVersion();
+            return 0;
         } else if (Arg("--help") || Arg("-h")) {
             PrintUsage(argv[0]);
             return 0;
@@ -82,7 +92,7 @@ int main(int argc, char* argv[]) {
         return 1;
     }
 
-    LOG_INFO("TenClaw VMM v0.1");
+    LOG_INFO("TenClaw VMM v" TENCLAW_VERSION);
     LOG_INFO("Kernel: %s", config.kernel_path.c_str());
     if (!config.initrd_path.empty())
         LOG_INFO("Initrd: %s", config.initrd_path.c_str());

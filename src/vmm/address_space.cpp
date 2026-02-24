@@ -2,12 +2,10 @@
 
 void AddressSpace::AddPioDevice(uint16_t base, uint16_t size, Device* device) {
     pio_devices_.push_back({base, size, device});
-    LOG_INFO("PIO device registered: 0x%X - 0x%X", base, base + size - 1);
 }
 
 void AddressSpace::AddMmioDevice(uint64_t base, uint64_t size, Device* device) {
     mmio_devices_.push_back({base, size, device});
-    LOG_INFO("MMIO device registered: 0x%llX - 0x%llX", base, base + size - 1);
 }
 
 Device* AddressSpace::FindPioDevice(uint16_t port, uint16_t* offset) const {

@@ -501,8 +501,6 @@ void NetBackend::SendDhcpReply(uint8_t type, uint32_t xid,
     // UDP checksum optional for IPv4, leave as 0
 
     InjectFrame(pkt, off);
-    LOG_INFO("DHCP: sent %s to 10.0.2.15",
-             type == 2 ? "OFFER" : "ACK");
 }
 
 // ============================================================

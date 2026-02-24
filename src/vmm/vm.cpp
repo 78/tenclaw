@@ -118,6 +118,24 @@ bool Vm::SetupDevices() {
     acpi_pm_.SetShutdownCallback([this]() { RequestStop(); });
     addr_space_.AddPioDevice(
         AcpiPm::kBasePort, AcpiPm::kRegCount, &acpi_pm_);
+
+    addr_space_.AddPioDevice(
+        I8259Pic::kMasterBase, I8259Pic::kRegCount, &pic_master_);
+    addr_space_.AddPioDevice(
+        I8259Pic::kSlaveBase, I8259Pic::kRegCount, &pic_slave_);
+    addr_space_.AddPioDevice(
+        PciHostBridge::kBasePort, PciHostBridge::kRegCount, &pci_host_);
+
+    // Silent sinks for harmless legacy ports:
+    //   0x80  — POST diagnostic / IO delay
+    //   0x87  — DMA page register
+    //   0x2E8 — COM4   0x2F8 — COM2   0x3E8 — COM3
+    addr_space_.AddPioDevice(0x80,  1, &port_sink_);
+    addr_space_.AddPioDevice(0x87,  1, &port_sink_);
+    addr_space_.AddPioDevice(0x2E8, 8, &port_sink_);
+    addr_space_.AddPioDevice(0x2F8, 8, &port_sink_);
+    addr_space_.AddPioDevice(0x3E8, 8, &port_sink_);
+    addr_space_.AddPioDevice(0xC000, 0x1000, &port_sink_);  // PCI mechanism #2 data ports
     return true;
 }
 
