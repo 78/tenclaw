@@ -1,0 +1,225 @@
+#include "vmm/vm.h"
+#include "arch/x86_64/boot.h"
+
+Vm::~Vm() {
+    running_ = false;
+    if (input_thread_.joinable())
+        input_thread_.join();
+    vcpu_.reset();
+    whvp_vm_.reset();
+    if (ram_) {
+        VirtualFree(ram_, 0, MEM_RELEASE);
+        ram_ = nullptr;
+    }
+}
+
+std::unique_ptr<Vm> Vm::Create(const VmConfig& config) {
+    if (!whvp::IsHypervisorPresent()) {
+        LOG_ERROR("Windows Hypervisor Platform is not available.");
+        LOG_ERROR("Please enable Hyper-V in Windows Features.");
+        return nullptr;
+    }
+
+    auto vm = std::unique_ptr<Vm>(new Vm());
+    uint64_t ram_bytes = config.memory_mb * 1024 * 1024;
+
+    vm->whvp_vm_ = whvp::WhvpVm::Create(config.cpu_count);
+    if (!vm->whvp_vm_) return nullptr;
+
+    if (!vm->AllocateMemory(ram_bytes)) return nullptr;
+
+    if (!vm->SetupDevices()) return nullptr;
+
+    if (!vm->LoadKernel(config)) return nullptr;
+
+    vm->vcpu_ = whvp::WhvpVCpu::Create(
+        *vm->whvp_vm_, 0, &vm->addr_space_);
+    if (!vm->vcpu_) return nullptr;
+
+    WHV_REGISTER_NAME names[64]{};
+    WHV_REGISTER_VALUE values[64]{};
+    uint32_t count = 0;
+    x86::BuildInitialRegisters(vm->ram_, names, values, &count);
+
+    if (!vm->vcpu_->SetRegisters(names, values, count)) {
+        LOG_ERROR("Failed to set initial vCPU registers");
+        return nullptr;
+    }
+
+    LOG_INFO("VM created successfully");
+    return vm;
+}
+
+bool Vm::AllocateMemory(uint64_t size) {
+    ram_size_ = AlignUp(size, kPageSize);
+    ram_ = static_cast<uint8_t*>(
+        VirtualAlloc(nullptr, ram_size_,
+                     MEM_COMMIT | MEM_RESERVE, PAGE_READWRITE));
+    if (!ram_) {
+        LOG_ERROR("VirtualAlloc(%llu MB) failed", ram_size_ / (1024 * 1024));
+        return false;
+    }
+    memset(ram_, 0, ram_size_);
+
+    WHV_MAP_GPA_RANGE_FLAGS flags =
+        WHvMapGpaRangeFlagRead | WHvMapGpaRangeFlagWrite |
+        WHvMapGpaRangeFlagExecute;
+
+    if (!whvp_vm_->MapMemory(0, ram_, ram_size_, flags)) {
+        return false;
+    }
+
+    LOG_INFO("Guest RAM: %llu MB at HVA %p",
+             ram_size_ / (1024 * 1024), ram_);
+    return true;
+}
+
+bool Vm::SetupDevices() {
+    uart_.SetIrqCallback([this]() { InjectIrq(4); });
+    addr_space_.AddPioDevice(
+        Uart16550::kCom1Base, Uart16550::kRegCount, &uart_);
+    addr_space_.AddPioDevice(
+        I8254Pit::kBasePort, I8254Pit::kRegCount, &pit_);
+    sys_ctrl_b_.SetPit(&pit_);
+    addr_space_.AddPioDevice(
+        SystemControlB::kPort, SystemControlB::kRegCount, &sys_ctrl_b_);
+    addr_space_.AddPioDevice(
+        CmosRtc::kBasePort, CmosRtc::kRegCount, &rtc_);
+    addr_space_.AddMmioDevice(
+        IoApic::kBaseAddress, IoApic::kSize, &ioapic_);
+    return true;
+}
+
+bool Vm::LoadKernel(const VmConfig& config) {
+    x86::BootConfig boot_cfg;
+    boot_cfg.kernel_path = config.kernel_path;
+    boot_cfg.initrd_path = config.initrd_path;
+    boot_cfg.cmdline = config.cmdline;
+    boot_cfg.ram_size = ram_size_;
+
+    uint64_t kernel_size = x86::LoadLinuxKernel(boot_cfg, ram_, ram_size_);
+    if (kernel_size == 0) {
+        return false;
+    }
+    return true;
+}
+
+void Vm::InputThreadFunc() {
+    HANDLE h_stdin = GetStdHandle(STD_INPUT_HANDLE);
+    if (h_stdin == INVALID_HANDLE_VALUE) return;
+
+    DWORD old_mode = 0;
+    BOOL is_console = GetConsoleMode(h_stdin, &old_mode);
+
+    if (is_console) {
+        SetConsoleMode(h_stdin, ENABLE_WINDOW_INPUT);
+    }
+
+    while (running_) {
+        if (is_console) {
+            DWORD avail = 0;
+            if (!GetNumberOfConsoleInputEvents(h_stdin, &avail) || avail == 0) {
+                Sleep(16);
+                continue;
+            }
+
+            INPUT_RECORD rec{};
+            DWORD read_count = 0;
+            if (!ReadConsoleInput(h_stdin, &rec, 1, &read_count) || read_count == 0)
+                continue;
+
+            if (rec.EventType != KEY_EVENT || !rec.Event.KeyEvent.bKeyDown)
+                continue;
+
+            char ch = rec.Event.KeyEvent.uChar.AsciiChar;
+            if (ch == 0) continue;
+            if (ch == '\r') ch = '\n';
+
+            uart_.PushInput(static_cast<uint8_t>(ch));
+            InjectIrq(4);
+        } else {
+            // Pipe/redirected stdin: blocking read
+            char buf[1];
+            DWORD bytes_read = 0;
+            if (ReadFile(h_stdin, buf, 1, &bytes_read, nullptr) && bytes_read > 0) {
+                char ch = buf[0];
+                if (ch == '\r') ch = '\n';
+                uart_.PushInput(static_cast<uint8_t>(ch));
+                InjectIrq(4);
+            } else {
+                Sleep(16);
+            }
+        }
+    }
+
+    if (is_console) {
+        SetConsoleMode(h_stdin, old_mode);
+    }
+}
+
+void Vm::InjectIrq(uint8_t irq) {
+    uint64_t rte = 0;
+    if (!ioapic_.GetRedirEntry(irq, &rte)) return;
+
+    bool masked = (rte >> 16) & 1;
+    if (masked) return;
+
+    uint32_t vector = rte & 0xFF;
+    if (vector == 0) return;
+
+    WHV_INTERRUPT_CONTROL ctrl{};
+    ctrl.Type = WHvX64InterruptTypeFixed;
+    ctrl.DestinationMode = ((rte >> 11) & 1)
+        ? WHvX64InterruptDestinationModeLogical
+        : WHvX64InterruptDestinationModePhysical;
+    ctrl.TriggerMode = ((rte >> 15) & 1)
+        ? WHvX64InterruptTriggerModeLevel
+        : WHvX64InterruptTriggerModeEdge;
+    ctrl.Destination = static_cast<uint32_t>(rte >> 56);
+    ctrl.Vector = vector;
+
+    WHvRequestInterrupt(whvp_vm_->Handle(), &ctrl, sizeof(ctrl));
+}
+
+int Vm::Run() {
+    running_ = true;
+    LOG_INFO("Starting VM execution...");
+
+    input_thread_ = std::thread(&Vm::InputThreadFunc, this);
+
+    uint64_t exit_count = 0;
+    while (running_) {
+        auto action = vcpu_->RunOnce();
+        exit_count++;
+
+        switch (action) {
+        case whvp::VCpuExitAction::kContinue:
+            break;
+
+        case whvp::VCpuExitAction::kHalt:
+            SwitchToThread();
+            break;
+
+        case whvp::VCpuExitAction::kShutdown:
+            LOG_INFO("VM shutdown (after %llu exits)", exit_count);
+            running_ = false;
+            return 0;
+
+        case whvp::VCpuExitAction::kError:
+            LOG_ERROR("VM error (after %llu exits)", exit_count);
+            running_ = false;
+            return 1;
+        }
+    }
+
+    LOG_INFO("VM stopped (total exits: %llu)", exit_count);
+    return 0;
+}
+
+void Vm::RequestStop() {
+    running_ = false;
+    if (vcpu_) {
+        WHvCancelRunVirtualProcessor(
+            whvp_vm_->Handle(), vcpu_->VpIndex(), 0);
+    }
+}
