@@ -69,6 +69,7 @@ private:
     void HandleTcpReadable(NatEntry* entry);
     void HandleUdpReadable(NatEntry* entry);
     void DrainTcpToGuest(NatEntry* entry);
+    void DrainTcpToHost(NatEntry* entry);
 
     // ICMP relay
     void HandleIcmpOut(uint32_t src_ip, uint32_t dst_ip,
@@ -112,6 +113,7 @@ private:
         bool     connecting  = false;
         std::vector<uint8_t> pending_data;
         std::vector<uint8_t> pending_to_guest;
+        std::vector<uint8_t> pending_to_host;  // buffered data from guest waiting to send to host
         uint64_t last_active_ms = 0;
         bool     closed = false; // both sides done, pending removal
     };
@@ -134,6 +136,7 @@ private:
     };
     std::vector<PfEntry> port_forwards_;
     void DrainPfToGuest(PfEntry::Conn& conn);
+    void DrainPfToHost(PfEntry::Conn& conn);
 
 public:
     // Network addresses (public for use by lwIP callbacks)

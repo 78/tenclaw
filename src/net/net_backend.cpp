@@ -922,11 +922,10 @@ void NetBackend::OnTcpRecv(NatEntry* entry, void* pcb_v, void* p_v) {
         return;
     }
 
-    if (entry->host_socket != INVALID_SOCKET) {
-        send(static_cast<SOCKET>(entry->host_socket),
-             reinterpret_cast<const char*>(data.data()),
-             static_cast<int>(data.size()), 0);
-    }
+    // Buffer data and attempt to send
+    entry->pending_to_host.insert(entry->pending_to_host.end(),
+                                   data.begin(), data.end());
+    DrainTcpToHost(entry);
 }
 
 void NetBackend::OnTcpErr(NatEntry* entry) {
@@ -985,6 +984,12 @@ bool NetBackend::PollSockets() {
                 DrainTcpToGuest(e.get());
                 if (!e->pending_to_guest.empty())
                     continue; // back-pressure: don't read until drained
+
+                // Monitor for writability if we have pending data to host
+                if (!e->pending_to_host.empty()) {
+                    FD_SET(s, &wfds);
+                    count++;
+                }
             }
             FD_SET(s, &rfds);
             count++;
@@ -1016,11 +1021,20 @@ bool NetBackend::PollSockets() {
             }
             e->connecting = false;
             e->last_active_ms = GetTickCount64();
+            // Move pending_data to pending_to_host for proper draining
             if (!e->pending_data.empty()) {
-                send(s, reinterpret_cast<const char*>(e->pending_data.data()),
-                     static_cast<int>(e->pending_data.size()), 0);
+                e->pending_to_host.insert(e->pending_to_host.end(),
+                                          e->pending_data.begin(),
+                                          e->pending_data.end());
                 e->pending_data.clear();
+                DrainTcpToHost(e);
             }
+        }
+
+        // Drain pending data to host when socket becomes writable
+        if (!e->connecting && e->proto == IPPROTO_TCP &&
+            !e->pending_to_host.empty() && FD_ISSET(s, &wfds)) {
+            DrainTcpToHost(e);
         }
 
         if (!e->connecting && FD_ISSET(s, &rfds)) {
@@ -1046,6 +1060,42 @@ void NetBackend::DrainTcpToGuest(NatEntry* entry) {
         entry->pending_to_guest.erase(
             entry->pending_to_guest.begin(),
             entry->pending_to_guest.begin() + to_write);
+    }
+}
+
+void NetBackend::DrainTcpToHost(NatEntry* entry) {
+    if (entry->pending_to_host.empty()) return;
+    if (entry->host_socket == INVALID_SOCKET) {
+        entry->pending_to_host.clear();
+        return;
+    }
+
+    SOCKET s = static_cast<SOCKET>(entry->host_socket);
+    int sent = send(s, reinterpret_cast<const char*>(entry->pending_to_host.data()),
+                    static_cast<int>(entry->pending_to_host.size()), 0);
+
+    if (sent > 0) {
+        entry->pending_to_host.erase(
+            entry->pending_to_host.begin(),
+            entry->pending_to_host.begin() + sent);
+    } else if (sent == SOCKET_ERROR) {
+        int err = WSAGetLastError();
+        if (err != WSAEWOULDBLOCK) {
+            // Real error, close the connection
+            closesocket(s);
+            entry->host_socket = INVALID_SOCKET;
+            entry->pending_to_host.clear();
+            if (entry->conn_pcb) {
+                auto* pcb = static_cast<struct tcp_pcb*>(entry->conn_pcb);
+                tcp_arg(pcb, nullptr);
+                tcp_recv(pcb, nullptr);
+                tcp_err(pcb, nullptr);
+                tcp_close(pcb);
+                entry->conn_pcb = nullptr;
+            }
+            entry->closed = true;
+        }
+        // WSAEWOULDBLOCK: will retry on next poll
     }
 }
 
@@ -1133,6 +1183,41 @@ void NetBackend::DrainPfToGuest(PfEntry::Conn& conn) {
         conn.pending_to_guest.erase(
             conn.pending_to_guest.begin(),
             conn.pending_to_guest.begin() + to_write);
+    }
+}
+
+void NetBackend::DrainPfToHost(PfEntry::Conn& conn) {
+    if (conn.pending_to_host.empty()) return;
+    if (conn.host_sock == ~(uintptr_t)0) {
+        conn.pending_to_host.clear();
+        return;
+    }
+
+    SOCKET s = static_cast<SOCKET>(conn.host_sock);
+    int sent = send(s, reinterpret_cast<const char*>(conn.pending_to_host.data()),
+                    static_cast<int>(conn.pending_to_host.size()), 0);
+
+    if (sent > 0) {
+        conn.pending_to_host.erase(
+            conn.pending_to_host.begin(),
+            conn.pending_to_host.begin() + sent);
+    } else if (sent == SOCKET_ERROR) {
+        int err = WSAGetLastError();
+        if (err != WSAEWOULDBLOCK) {
+            // Real error, close the connection
+            closesocket(s);
+            conn.host_sock = ~(uintptr_t)0;
+            conn.pending_to_host.clear();
+            if (conn.guest_pcb) {
+                auto* pcb = static_cast<struct tcp_pcb*>(conn.guest_pcb);
+                tcp_arg(pcb, nullptr);
+                tcp_recv(pcb, nullptr);
+                tcp_err(pcb, nullptr);
+                tcp_close(pcb);
+                conn.guest_pcb = nullptr;
+            }
+        }
+        // WSAEWOULDBLOCK: will retry on next poll
     }
 }
 
@@ -1300,11 +1385,10 @@ void NetBackend::PollPortForwards() {
                     pbuf_copy_partial(p, data.data(), p->tot_len, 0);
                     tcp_recved(pcb, p->tot_len);
                     pbuf_free(p);
-                    if (c->host_sock != ~(uintptr_t)0) {
-                        send(static_cast<SOCKET>(c->host_sock),
-                             reinterpret_cast<const char*>(data.data()),
-                             static_cast<int>(data.size()), 0);
-                    }
+                    // Buffer data and attempt to send via DrainPfToHost
+                    c->pending_to_host.insert(c->pending_to_host.end(),
+                                              data.begin(), data.end());
+                    g_net_backend->DrainPfToHost(*c);
                     return ERR_OK;
                 });
                 tcp_err(pcb, [](void* arg, err_t err) {
@@ -1343,10 +1427,23 @@ void NetBackend::PollPortForwards() {
                 continue; // back-pressure: don't read until drained
 
             SOCKET s = static_cast<SOCKET>(c.host_sock);
+            fd_set wfds;
             FD_ZERO(&rfds);
+            FD_ZERO(&wfds);
             FD_SET(s, &rfds);
+            if (!c.pending_to_host.empty()) {
+                FD_SET(s, &wfds);
+            }
             tv = {0, 0};
-            if (select(0, &rfds, nullptr, nullptr, &tv) > 0 && FD_ISSET(s, &rfds)) {
+            int sel_result = select(0, &rfds, &wfds, nullptr, &tv);
+            if (sel_result <= 0) continue;
+
+            // Drain pending data to host when socket becomes writable
+            if (!c.pending_to_host.empty() && FD_ISSET(s, &wfds)) {
+                DrainPfToHost(c);
+            }
+
+            if (FD_ISSET(s, &rfds)) {
                 char buf[4096];
                 int n = recv(s, buf, sizeof(buf), 0);
                 if (n <= 0) {
