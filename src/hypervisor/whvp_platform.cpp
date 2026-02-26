@@ -1,5 +1,5 @@
 #include "hypervisor/whvp_platform.h"
-#include "vmm/types.h"
+#include "core/vmm/types.h"
 
 namespace whvp {
 

@@ -1,7 +1,7 @@
 #pragma once
 
 #include "hypervisor/whvp_vm.h"
-#include "vmm/address_space.h"
+#include "core/vmm/address_space.h"
 
 namespace whvp {
 

@@ -1,0 +1,127 @@
+#pragma once
+
+#include "common/vm_model.h"
+#include "ipc/protocol_v1.h"
+#include "manager/app_settings.h"
+
+#include <atomic>
+#include <functional>
+#include <mutex>
+#include <optional>
+#include <string>
+#include <thread>
+#include <unordered_map>
+#include <vector>
+
+struct VmRuntimeHandle {
+    void* process_handle = nullptr;
+    uint32_t process_id = 0;
+    void* pipe_handle = nullptr;
+    std::string pipe_name;
+    std::thread read_thread;
+    std::atomic<bool> read_running{false};
+
+    VmRuntimeHandle() = default;
+    VmRuntimeHandle(const VmRuntimeHandle& o)
+        : process_handle(o.process_handle),
+          process_id(o.process_id),
+          pipe_handle(o.pipe_handle),
+          pipe_name(o.pipe_name),
+          read_running(o.read_running.load()) {}
+    VmRuntimeHandle& operator=(const VmRuntimeHandle& o) {
+        if (this != &o) {
+            process_handle = o.process_handle;
+            process_id = o.process_id;
+            pipe_handle = o.pipe_handle;
+            pipe_name = o.pipe_name;
+            read_running.store(o.read_running.load());
+        }
+        return *this;
+    }
+    VmRuntimeHandle(VmRuntimeHandle&&) = default;
+    VmRuntimeHandle& operator=(VmRuntimeHandle&&) = default;
+};
+
+struct VmRecord {
+    VmSpec spec;
+    VmPowerState state = VmPowerState::kStopped;
+    std::optional<VmMutablePatch> pending_patch;
+    VmRuntimeHandle runtime;
+    int last_exit_code = 0;
+
+    VmRecord() = default;
+    VmRecord(VmSpec s) : spec(std::move(s)) {}
+    VmRecord(const VmRecord&) = default;
+    VmRecord& operator=(const VmRecord&) = default;
+    VmRecord(VmRecord&&) = default;
+    VmRecord& operator=(VmRecord&&) = default;
+};
+
+// Source paths the user picked in the "Create VM" dialog.
+// These files will be copied into the new VM directory.
+struct VmCreateRequest {
+    std::string name;
+    std::string source_kernel;
+    std::string source_initrd;
+    std::string source_disk;
+    std::string cmdline;
+    uint64_t memory_mb = 4096;
+    uint32_t cpu_count = 4;
+    bool nat_enabled = false;
+};
+
+class ManagerService {
+public:
+    ManagerService(std::string runtime_exe_path, std::string data_dir);
+    ~ManagerService();
+
+    bool CreateVm(const VmCreateRequest& req, std::string* error);
+    bool DeleteVm(const std::string& vm_id, std::string* error);
+    bool EditVm(const std::string& vm_id, const VmMutablePatch& patch, std::string* error);
+    bool StartVm(const std::string& vm_id, std::string* error);
+    bool StopVm(const std::string& vm_id, std::string* error);
+    bool RebootVm(const std::string& vm_id, std::string* error);
+    bool ShutdownVm(const std::string& vm_id, std::string* error);
+    void ShutdownAll();
+
+    std::vector<VmRecord> ListVms() const;
+    std::optional<VmRecord> GetVm(const std::string& vm_id) const;
+
+    const std::string& data_dir() const { return data_dir_; }
+    settings::AppSettings& app_settings() { return settings_; }
+
+    void SaveAppSettings();
+
+    using ConsoleCallback = std::function<void(const std::string& vm_id, const std::string& data)>;
+    void SetConsoleCallback(ConsoleCallback cb);
+    bool SendConsoleInput(const std::string& vm_id, const std::string& input);
+
+    using StateChangeCallback = std::function<void(const std::string& vm_id)>;
+    void SetStateChangeCallback(StateChangeCallback cb);
+
+private:
+    bool SendRuntimeMessage(VmRecord& vm, const ipc::Message& msg);
+    bool EnsurePipeConnected(VmRecord& vm);
+    void CloseRuntime(VmRecord& vm);
+    void ApplyPendingPatchLocked(VmRecord& vm);
+    void LoadVms();
+    void SaveVmPaths();
+    void StartReadThread(const std::string& vm_id, VmRecord& vm);
+    void StopReadThread(VmRecord& vm);
+    void PipeReadThreadFunc(const std::string& vm_id);
+    void DispatchPipeData(std::string& pending, const std::string& vm_id);
+    void HandleProcessExit(const std::string& vm_id);
+    void CleanupRuntimeHandles(VmRecord& vm);
+    void HandleIncomingMessage(const std::string& vm_id, const ipc::Message& msg);
+
+    void InitJobObject();
+
+    std::string runtime_exe_path_;
+    std::string data_dir_;
+    settings::AppSettings settings_;
+    std::unordered_map<std::string, VmRecord> vms_;
+    std::mutex vms_mutex_;
+    ConsoleCallback console_callback_;
+    StateChangeCallback state_change_callback_;
+    void* job_object_ = nullptr;
+};

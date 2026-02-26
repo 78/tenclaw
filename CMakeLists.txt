@@ -1,14 +1,17 @@
-cmake_minimum_required(VERSION 3.20)
+cmake_minimum_required(VERSION 3.21)
 cmake_policy(SET CMP0091 NEW)
 project(TenBox VERSION 0.1.0 LANGUAGES C CXX)
 
 set(CMAKE_CXX_STANDARD 20)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
 
+# Put all executables in build root (e.g. x64-debug/) instead of deep src/... paths
+set(CMAKE_RUNTIME_OUTPUT_DIRECTORY ${CMAKE_BINARY_DIR})
+
 if(MSVC)
-    # Use static runtime in non-Debug configs to avoid msvcp DLL dependency on target machines.
     set(CMAKE_MSVC_RUNTIME_LIBRARY
         "$<$<CONFIG:Debug>:MultiThreadedDebugDLL>$<$<NOT:$<CONFIG:Debug>>:MultiThreaded>")
+    add_compile_options(/utf-8)
 endif()
 
 include(FetchContent)
@@ -36,48 +39,34 @@ endif()
 set(LWIP_DIR ${lwip_SOURCE_DIR})
 set(LWIP_INCLUDE_DIRS
     ${LWIP_DIR}/src/include
-    ${CMAKE_CURRENT_SOURCE_DIR}/src/net
+    ${CMAKE_CURRENT_SOURCE_DIR}/src/core/net
 )
 set(LWIP_COMPILER_FLAGS "")
 set(LWIP_DEFINITIONS "")
 set(LWIP_MBEDTLS_DEFINITIONS "")
 set(LWIP_MBEDTLS_INCLUDE_DIRS "")
 set(LWIP_EXCLUDE_SLIPIF TRUE)
+set(BUILD_SHARED_LIBS_SAVED ${BUILD_SHARED_LIBS})
+set(BUILD_SHARED_LIBS OFF)
 include(${LWIP_DIR}/src/Filelists.cmake)
+set(BUILD_SHARED_LIBS ${BUILD_SHARED_LIBS_SAVED})
 
 if(MSVC)
     target_compile_options(lwipcore PRIVATE /W0)
 endif()
 
-set(SOURCES
-    src/main.cpp
-    src/vmm/vm.cpp
-    src/vmm/address_space.cpp
-    src/hypervisor/whvp_platform.cpp
-    src/hypervisor/whvp_vm.cpp
-    src/hypervisor/whvp_vcpu.cpp
-    src/arch/x86_64/boot.cpp
-    src/device/serial/uart_16550.cpp
-    src/device/timer/i8254_pit.cpp
-    src/device/rtc/cmos_rtc.cpp
-    src/device/irq/ioapic.cpp
-    src/arch/x86_64/acpi.cpp
-    src/device/acpi/acpi_pm.cpp
-    src/device/virtio/virtqueue.cpp
-    src/device/virtio/virtio_mmio.cpp
-    src/device/virtio/virtio_blk.cpp
-    src/device/virtio/disk_image.cpp
-    src/device/virtio/raw_image.cpp
-    src/device/virtio/qcow2.cpp
-    src/device/virtio/virtio_net.cpp
-    src/net/net_backend.cpp
-)
-
 configure_file(src/version.h.in ${CMAKE_CURRENT_BINARY_DIR}/version.h)
 
-add_executable(TenBox ${SOURCES})
-target_include_directories(TenBox PRIVATE src/ ${CMAKE_CURRENT_BINARY_DIR})
+# nlohmann/json — JSON for Modern C++
+FetchContent_Declare(
+    json
+    URL https://github.com/nlohmann/json/releases/download/v3.12.0/json.tar.xz
+)
+FetchContent_MakeAvailable(json)
 
-target_include_directories(TenBox PRIVATE ${zlib_SOURCE_DIR} ${zlib_BINARY_DIR})
-target_include_directories(TenBox PRIVATE ${LWIP_INCLUDE_DIRS})
-target_link_libraries(TenBox PRIVATE WinHvPlatform WinHvEmulation zlibstatic lwipcore ws2_32)
+add_subdirectory(src/core)
+add_subdirectory(src/ipc)
+add_subdirectory(src/ui/win32)
+add_subdirectory(src/platform/tray/windows)
+add_subdirectory(src/runtime)
+add_subdirectory(src/manager)

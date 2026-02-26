@@ -1,0 +1,38 @@
+set(TENBOX_CORE_SOURCES
+    ${CMAKE_SOURCE_DIR}/src/core/vmm/vm.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/vmm/address_space.cpp
+    ${CMAKE_SOURCE_DIR}/src/hypervisor/whvp_platform.cpp
+    ${CMAKE_SOURCE_DIR}/src/hypervisor/whvp_vm.cpp
+    ${CMAKE_SOURCE_DIR}/src/hypervisor/whvp_vcpu.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/arch/x86_64/boot.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/device/serial/uart_16550.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/device/timer/i8254_pit.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/device/rtc/cmos_rtc.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/device/irq/ioapic.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/arch/x86_64/acpi.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/device/acpi/acpi_pm.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/device/virtio/virtqueue.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/device/virtio/virtio_mmio.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/device/virtio/virtio_blk.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/device/virtio/disk_image.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/device/virtio/raw_image.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/device/virtio/qcow2.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/device/virtio/virtio_net.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/net/net_backend.cpp
+    ${CMAKE_SOURCE_DIR}/src/platform/windows/console/std_console_port.cpp
+)
+
+add_library(tenbox_core STATIC ${TENBOX_CORE_SOURCES})
+target_include_directories(tenbox_core
+    PUBLIC
+        ${CMAKE_SOURCE_DIR}/src
+        ${CMAKE_BINARY_DIR}
+        ${zlib_SOURCE_DIR}
+        ${zlib_BINARY_DIR}
+        ${LWIP_INCLUDE_DIRS}
+)
+target_link_libraries(tenbox_core
+    PUBLIC
+        zlibstatic
+        lwipcore
+)
