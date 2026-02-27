@@ -59,6 +59,8 @@ void VirtioGpuDevice::OnStatusChange(uint32_t new_status) {
     if (new_status == 0) {
         resources_.clear();
         scanout_resource_id_ = 0;
+        scanout_width_ = 0;
+        scanout_height_ = 0;
     }
 }
 
@@ -325,9 +327,13 @@ void VirtioGpuDevice::CmdSetScanout(const uint8_t* req, uint32_t req_len,
     }
 
     uint32_t old_resource_id = scanout_resource_id_;
+    uint32_t old_width = scanout_width_;
+    uint32_t old_height = scanout_height_;
 
     if (cmd->resource_id == 0) {
         scanout_resource_id_ = 0;
+        scanout_width_ = 0;
+        scanout_height_ = 0;
         WriteResponse(resp, VIRTIO_GPU_RESP_OK_NODATA, resp_len);
         if (old_resource_id != 0 && scanout_state_callback_) {
             scanout_state_callback_(false, 0, 0);
@@ -340,10 +346,17 @@ void VirtioGpuDevice::CmdSetScanout(const uint8_t* req, uint32_t req_len,
         return;
     }
     scanout_resource_id_ = cmd->resource_id;
+    scanout_width_ = it->second.width;
+    scanout_height_ = it->second.height;
     WriteResponse(resp, VIRTIO_GPU_RESP_OK_NODATA, resp_len);
 
-    if (old_resource_id == 0 && scanout_state_callback_) {
-        scanout_state_callback_(true, it->second.width, it->second.height);
+    // Notify if scanout became active or resolution changed
+    if (scanout_state_callback_) {
+        bool was_active = (old_resource_id != 0);
+        bool size_changed = (scanout_width_ != old_width || scanout_height_ != old_height);
+        if (!was_active || size_changed) {
+            scanout_state_callback_(true, scanout_width_, scanout_height_);
+        }
     }
 }
 
@@ -517,4 +530,24 @@ void VirtioGpuDevice::CmdDetachBacking(const uint8_t* req, uint32_t req_len,
     }
     it->second.backing.clear();
     WriteResponse(resp, VIRTIO_GPU_RESP_OK_NODATA, resp_len);
+}
+
+void VirtioGpuDevice::SetDisplaySize(uint32_t width, uint32_t height) {
+    if (width == 0 || height == 0 || width > 16384 || height > 16384) return;
+
+    // Align width to 8 pixels for compatibility with GPU and DRM drivers
+    width = (width + 7) & ~7u;
+
+    if (width == display_width_ && height == display_height_) return;
+
+    display_width_ = width;
+    display_height_ = height;
+
+    // Set VIRTIO_GPU_EVENT_DISPLAY to notify guest that display config changed
+    gpu_config_.events_read |= VIRTIO_GPU_EVENT_DISPLAY;
+
+    // Trigger config change interrupt so guest re-reads display info
+    if (mmio_) {
+        mmio_->NotifyConfigChange();
+    }
 }

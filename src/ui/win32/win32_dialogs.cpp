@@ -1,5 +1,6 @@
 #include "ui/win32/win32_dialogs.h"
 #include "ui/common/vm_forms.h"
+#include "ui/common/i18n.h"
 #include "manager/app_settings.h"
 
 #define NOMINMAX
@@ -12,6 +13,7 @@
 #include <cstring>
 #include <filesystem>
 #include <string>
+#include <vector>
 
 // ── Shared helpers ──
 
@@ -141,11 +143,20 @@ private:
     void AppendWord(WORD w) { Append(&w, 2); }
 
     void AppendWideStr(const char* s) {
-        while (*s) {
-            WORD w = static_cast<WORD>(static_cast<unsigned char>(*s++));
-            AppendWord(w);
+        if (!s || !*s) {
+            AppendWord(0);
+            return;
         }
-        AppendWord(0);
+        int len = MultiByteToWideChar(CP_UTF8, 0, s, -1, nullptr, 0);
+        if (len <= 0) {
+            AppendWord(0);
+            return;
+        }
+        std::vector<wchar_t> wstr(len);
+        MultiByteToWideChar(CP_UTF8, 0, s, -1, wstr.data(), len);
+        for (int i = 0; i < len; ++i) {
+            AppendWord(static_cast<WORD>(wstr[i]));
+        }
     }
 
     void Align(size_t a) {
@@ -248,7 +259,7 @@ static INT_PTR CALLBACK CreateDlgProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) 
 
             auto v = ValidateCreateRequest(req);
             if (!v.ok) {
-                MessageBoxA(dlg, v.message.c_str(), "Validation Error", MB_OK | MB_ICONWARNING);
+                MessageBoxA(dlg, v.message.c_str(), i18n::tr(i18n::S::kValidationError), MB_OK | MB_ICONWARNING);
                 return TRUE;
             }
 
@@ -257,7 +268,7 @@ static INT_PTR CALLBACK CreateDlgProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) 
                 data->created = true;
                 EndDialog(dlg, IDOK);
             } else {
-                MessageBoxA(dlg, error.c_str(), "Error", MB_OK | MB_ICONERROR);
+                MessageBoxA(dlg, error.c_str(), i18n::tr(i18n::S::kError), MB_OK | MB_ICONERROR);
             }
             return TRUE;
         }
@@ -275,31 +286,32 @@ static INT_PTR CALLBACK CreateDlgProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) 
 }
 
 bool ShowCreateVmDialog(HWND parent, ManagerService& mgr, std::string* error) {
+    using S = i18n::S;
     DlgBuilder b;
     int W = 260, H = 210;
-    b.Begin("Create New VM", 0, 0, W, H,
+    b.Begin(i18n::tr(S::kDlgCreateVm), 0, 0, W, H,
         WS_POPUP | WS_CAPTION | WS_SYSMENU | DS_CENTER);
 
     int lx = 8, lw = 40, ex = 52, ew = W - 60, y = 8, rh = 14, sp = 18;
 
-    b.AddStatic(0,          "Name:",    lx, y, lw, rh);
+    b.AddStatic(0,          i18n::tr(S::kDlgLabelName),   lx, y, lw, rh);
     b.AddEdit(IDC_CR_NAME,              ex, y-2, ew, rh); y += sp;
-    b.AddStatic(0,          "Kernel:",  lx, y, lw, rh);
+    b.AddStatic(0,          i18n::tr(S::kDlgLabelKernel), lx, y, lw, rh);
     b.AddEdit(IDC_CR_KERNEL,            ex, y-2, ew, rh); y += sp;
-    b.AddStatic(0,          "Initrd:",  lx, y, lw, rh);
+    b.AddStatic(0,          i18n::tr(S::kDlgLabelInitrd), lx, y, lw, rh);
     b.AddEdit(IDC_CR_INITRD,            ex, y-2, ew, rh); y += sp;
-    b.AddStatic(0,          "Disk:",    lx, y, lw, rh);
+    b.AddStatic(0,          i18n::tr(S::kDlgLabelDisk),   lx, y, lw, rh);
     b.AddEdit(IDC_CR_DISK,              ex, y-2, ew, rh); y += sp;
-    b.AddStatic(0,          "Memory:",  lx, y, lw, rh);
+    b.AddStatic(0,          i18n::tr(S::kDlgLabelMemory), lx, y, lw, rh);
     b.AddComboBox(IDC_CR_MEMORY,        ex, y-2, ew, 100); y += sp;
-    b.AddStatic(0,          "vCPUs:",   lx, y, lw, rh);
+    b.AddStatic(0,          i18n::tr(S::kDlgLabelVcpus),  lx, y, lw, rh);
     b.AddComboBox(IDC_CR_CPUS,          ex, y-2, ew, 100); y += sp;
-    b.AddCheckBox(IDC_CR_NAT, "Enable NAT networking", ex, y, ew, rh); y += sp;
-    b.AddStatic(0,          "Location:", lx, y, lw, rh);
+    b.AddCheckBox(IDC_CR_NAT, i18n::tr(S::kDlgEnableNat), ex, y, ew, rh); y += sp;
+    b.AddStatic(0,          i18n::tr(S::kDlgLabelLocation), lx, y, lw, rh);
     b.AddStatic(IDC_CR_LOC_LBL, "",     ex, y, ew, rh); y += sp + 4;
 
-    b.AddButton(IDCANCEL, "Cancel",     W - 110, y, 48, 14);
-    b.AddDefButton(IDOK,  "Create",     W - 56, y, 48, 14);
+    b.AddButton(IDCANCEL, i18n::tr(S::kDlgBtnCancel), W - 110, y, 48, 14);
+    b.AddDefButton(IDOK,  i18n::tr(S::kDlgBtnCreate), W - 56, y, 48, 14);
 
     CreateDlgData data{&mgr, false, ""};
     DialogBoxIndirectParamA(GetModuleHandle(nullptr), b.Build(), parent,
@@ -338,7 +350,7 @@ static INT_PTR CALLBACK EditDlgProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
         data = reinterpret_cast<EditDlgData*>(lp);
         SetWindowLongPtrA(dlg, DWLP_USER, reinterpret_cast<LONG_PTR>(data));
 
-        std::string title = "Edit - " + data->rec.spec.name;
+        std::string title = std::string(i18n::tr(i18n::S::kDlgEditTitlePrefix)) + data->rec.spec.name;
         SetWindowTextA(dlg, title.c_str());
 
         SetDlgItemTextA(dlg, IDC_ED_NAME, data->rec.spec.name.c_str());
@@ -363,8 +375,7 @@ static INT_PTR CALLBACK EditDlgProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
         EnableWindow(cpu_cb, !running);
 
         if (running) {
-            SetDlgItemTextA(dlg, IDC_ED_WARN,
-                "CPU / Memory changes require VM to be stopped");
+            SetDlgItemTextA(dlg, IDC_ED_WARN, i18n::tr(i18n::S::kCpuMemoryChangeWarning));
         }
 
         return TRUE;
@@ -395,7 +406,7 @@ static INT_PTR CALLBACK EditDlgProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
                 data->saved = true;
                 EndDialog(dlg, IDOK);
             } else {
-                MessageBoxA(dlg, error.c_str(), "Error", MB_OK | MB_ICONERROR);
+                MessageBoxA(dlg, error.c_str(), i18n::tr(i18n::S::kError), MB_OK | MB_ICONERROR);
             }
             return TRUE;
         }
@@ -414,24 +425,25 @@ static INT_PTR CALLBACK EditDlgProc(HWND dlg, UINT msg, WPARAM wp, LPARAM lp) {
 
 bool ShowEditVmDialog(HWND parent, ManagerService& mgr,
                       const VmRecord& rec, std::string* error) {
+    using S = i18n::S;
     DlgBuilder b;
     int W = 220, H = 148;
-    b.Begin("Edit VM", 0, 0, W, H,
+    b.Begin(i18n::tr(S::kDlgEditVm), 0, 0, W, H,
         WS_POPUP | WS_CAPTION | WS_SYSMENU | DS_CENTER);
 
     int lx = 8, lw = 40, ex = 52, ew = W - 60, y = 8, rh = 14, sp = 18;
 
-    b.AddStatic(0,         "Name:",    lx, y, lw, rh);
+    b.AddStatic(0,         i18n::tr(S::kDlgLabelName),   lx, y, lw, rh);
     b.AddEdit(IDC_ED_NAME,             ex, y-2, ew, rh); y += sp;
-    b.AddStatic(0,         "Memory:",  lx, y, lw, rh);
+    b.AddStatic(0,         i18n::tr(S::kDlgLabelMemory), lx, y, lw, rh);
     b.AddComboBox(IDC_ED_MEMORY,       ex, y-2, ew, 100); y += sp;
-    b.AddStatic(0,         "vCPUs:",   lx, y, lw, rh);
+    b.AddStatic(0,         i18n::tr(S::kDlgLabelVcpus),  lx, y, lw, rh);
     b.AddComboBox(IDC_ED_CPUS,         ex, y-2, ew, 100); y += sp;
-    b.AddCheckBox(IDC_ED_NAT, "Enable NAT networking", ex, y, ew, rh); y += sp;
+    b.AddCheckBox(IDC_ED_NAT, i18n::tr(S::kDlgEnableNat), ex, y, ew, rh); y += sp;
     b.AddStatic(IDC_ED_WARN, "",       lx, y, W - 16, rh); y += sp + 4;
 
-    b.AddButton(IDCANCEL, "Cancel",    W - 110, y, 48, 14);
-    b.AddDefButton(IDOK,  "Save",      W - 56, y, 48, 14);
+    b.AddButton(IDCANCEL, i18n::tr(S::kDlgBtnCancel), W - 110, y, 48, 14);
+    b.AddDefButton(IDOK,  i18n::tr(S::kDlgBtnSave),  W - 56, y, 48, 14);
 
     EditDlgData data{&mgr, rec, false, ""};
     DialogBoxIndirectParamA(GetModuleHandle(nullptr), b.Build(), parent,

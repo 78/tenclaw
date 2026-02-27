@@ -1,5 +1,6 @@
 #include "ui/win32/win32_display_panel.h"
 #include "ui/win32/vk_to_evdev.h"
+#include "ui/common/i18n.h"
 #include <windowsx.h>
 #include <algorithm>
 #include <cstring>
@@ -326,9 +327,10 @@ void DisplayPanel::OnPaint() {
     COLORREF text_color = captured_ ? RGB(255, 255, 255) : RGB(200, 200, 200);
     SetTextColor(hdc, text_color);
     const char* hint = captured_
-        ? "Press Right Alt to release | Full input capture (system keys)"
-        : "Click to capture system keys | Normal typing works when focused";
-    DrawTextA(hdc, hint, -1, &hint_rc,
+        ? i18n::tr(i18n::S::kDisplayHintCaptured)
+        : i18n::tr(i18n::S::kDisplayHintNormal);
+    std::wstring hint_w = i18n::to_wide(hint);
+    DrawTextW(hdc, hint_w.c_str(), -1, &hint_rc,
         DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
     EndPaint(hwnd_, &ps);

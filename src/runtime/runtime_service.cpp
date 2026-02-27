@@ -577,6 +577,19 @@ void RuntimeControlService::HandleMessage(const ipc::Message& message) {
         return;
     }
 
+    if (message.channel == ipc::Channel::kDisplay &&
+        message.kind == ipc::Kind::kRequest &&
+        message.type == "display.set_size") {
+        auto it_w = message.fields.find("width");
+        auto it_h = message.fields.find("height");
+        if (it_w != message.fields.end() && it_h != message.fields.end() && vm_) {
+            uint32_t w = static_cast<uint32_t>(std::strtoul(it_w->second.c_str(), nullptr, 10));
+            uint32_t h = static_cast<uint32_t>(std::strtoul(it_h->second.c_str(), nullptr, 10));
+            vm_->SetDisplaySize(w, h);
+        }
+        return;
+    }
+
     if (message.channel == ipc::Channel::kControl &&
         message.kind == ipc::Kind::kRequest &&
         message.type == "runtime.ping") {

@@ -514,3 +514,9 @@ void Vm::InjectPointerEvent(int32_t x, int32_t y, uint32_t buttons) {
         virtio_tablet_->InjectEvent(EV_SYN, SYN_REPORT, 0, /*notify=*/true);
     }
 }
+
+void Vm::SetDisplaySize(uint32_t width, uint32_t height) {
+    if (virtio_gpu_) {
+        virtio_gpu_->SetDisplaySize(width, height);
+    }
+}

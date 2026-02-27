@@ -2,6 +2,8 @@ add_executable(tenbox-manager
     ${CMAKE_SOURCE_DIR}/src/manager/main.cpp
     ${CMAKE_SOURCE_DIR}/src/manager/manager_service.cpp
     ${CMAKE_SOURCE_DIR}/src/manager/app_settings.cpp
+    ${CMAKE_SOURCE_DIR}/src/manager/app.manifest
+    ${CMAKE_SOURCE_DIR}/src/manager/toolbar.rc
 )
 
 target_include_directories(tenbox-manager

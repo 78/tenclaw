@@ -1,7 +1,9 @@
 #include "ui/win32/win32_ui_shell.h"
 #include "ui/win32/win32_dialogs.h"
 #include "ui/win32/win32_display_panel.h"
+#include "ui/common/i18n.h"
 #include "manager/app_settings.h"
+#include "manager/resource.h"
 
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
@@ -10,14 +12,11 @@
 #include <windowsx.h>
 
 #pragma comment(lib, "comctl32.lib")
-#pragma comment(linker, "/manifestdependency:\"type='win32' " \
-    "name='Microsoft.Windows.Common-Controls' version='6.0.0.0' " \
-    "processorArchitecture='*' publicKeyToken='6595b64144ccf1df' " \
-    "language='*'\"")
 
 #include "common/ports.h"
 
 #include <algorithm>
+#include <cstdio>
 #include <cstring>
 #include <deque>
 #include <filesystem>
@@ -78,12 +77,13 @@ static bool IsVmRunning(VmPowerState s) {
 }
 
 static const char* StateText(VmPowerState s) {
+    using S = i18n::S;
     switch (s) {
-    case VmPowerState::kRunning:  return "Running";
-    case VmPowerState::kStarting: return "Starting";
-    case VmPowerState::kStopping: return "Stopping";
-    case VmPowerState::kCrashed:  return "Crashed";
-    default:                      return "Stopped";
+    case VmPowerState::kRunning:  return i18n::tr(S::kStateRunning);
+    case VmPowerState::kStarting: return i18n::tr(S::kStateStarting);
+    case VmPowerState::kStopping: return i18n::tr(S::kStateStopping);
+    case VmPowerState::kCrashed:  return i18n::tr(S::kStateCrashed);
+    default:                      return i18n::tr(S::kStateStopped);
     }
 }
 
@@ -119,6 +119,17 @@ struct Win32UiShell::Impl {
     HMENU menu_bar  = nullptr;
 
     bool display_available = false;
+
+    // Track last sent display size to avoid redundant messages
+    uint32_t last_sent_display_w = 0;
+    uint32_t last_sent_display_h = 0;
+
+    // Pending display size for debounced resize (send after resize stops)
+    uint32_t pending_display_w = 0;
+    uint32_t pending_display_h = 0;
+    UINT_PTR resize_timer_id = 0;
+    static constexpr UINT kResizeTimerId = 9001;
+    static constexpr UINT kResizeDebounceMs = 500;
 
     static constexpr int kDetailRows = 7;
     HWND detail_labels[kDetailRows] = {};
@@ -222,28 +233,62 @@ static ATOM RegisterMainClass(HINSTANCE hinst) {
 // ── Menu building ──
 
 static HMENU BuildMenuBar() {
+    using S = i18n::S;
     HMENU bar = CreateMenu();
 
     HMENU file_menu = CreatePopupMenu();
-    AppendMenuA(file_menu, MF_STRING, IDM_NEW_VM, "New VM\tCtrl+N");
+    AppendMenuA(file_menu, MF_STRING, IDM_NEW_VM, i18n::tr(S::kMenuNewVm));
     AppendMenuA(file_menu, MF_SEPARATOR, 0, nullptr);
-    AppendMenuA(file_menu, MF_STRING, IDM_EXIT, "Exit\tAlt+F4");
-    AppendMenuA(bar, MF_POPUP, reinterpret_cast<UINT_PTR>(file_menu), "Manager");
+    AppendMenuA(file_menu, MF_STRING, IDM_EXIT, i18n::tr(S::kMenuExit));
+    AppendMenuA(bar, MF_POPUP, reinterpret_cast<UINT_PTR>(file_menu), i18n::tr(S::kMenuManager));
 
     HMENU vm_menu = CreatePopupMenu();
-    AppendMenuA(vm_menu, MF_STRING, IDM_EDIT,     "Edit...");
-    AppendMenuA(vm_menu, MF_STRING, IDM_DELETE,   "Delete");
+    AppendMenuA(vm_menu, MF_STRING, IDM_EDIT,     i18n::tr(S::kMenuEdit));
+    AppendMenuA(vm_menu, MF_STRING, IDM_DELETE,   i18n::tr(S::kMenuDelete));
     AppendMenuA(vm_menu, MF_SEPARATOR, 0, nullptr);
-    AppendMenuA(vm_menu, MF_STRING, IDM_START,    "Start");
-    AppendMenuA(vm_menu, MF_STRING, IDM_STOP,     "Stop");
-    AppendMenuA(vm_menu, MF_STRING, IDM_REBOOT,   "Reboot");
-    AppendMenuA(vm_menu, MF_STRING, IDM_SHUTDOWN,  "Shutdown");
-    AppendMenuA(bar, MF_POPUP, reinterpret_cast<UINT_PTR>(vm_menu), "VM");
+    AppendMenuA(vm_menu, MF_STRING, IDM_START,    i18n::tr(S::kMenuStart));
+    AppendMenuA(vm_menu, MF_STRING, IDM_STOP,     i18n::tr(S::kMenuStop));
+    AppendMenuA(vm_menu, MF_STRING, IDM_REBOOT,   i18n::tr(S::kMenuReboot));
+    AppendMenuA(vm_menu, MF_STRING, IDM_SHUTDOWN, i18n::tr(S::kMenuShutdown));
+    AppendMenuA(bar, MF_POPUP, reinterpret_cast<UINT_PTR>(vm_menu), i18n::tr(S::kMenuVm));
 
     return bar;
 }
 
 // ── Toolbar building ──
+
+static constexpr int kToolbarIconSize = 48;
+
+static HIMAGELIST CreateToolbarImageList(HINSTANCE hinst) {
+    const UINT bmp_ids[] = {
+        IDB_TOOLBAR_NEW_VM,
+        IDB_TOOLBAR_EDIT,
+        IDB_TOOLBAR_DELETE,
+        IDB_TOOLBAR_START,
+        IDB_TOOLBAR_STOP,
+        IDB_TOOLBAR_REBOOT,
+        IDB_TOOLBAR_SHUTDOWN,
+    };
+
+    HIMAGELIST hil = ImageList_Create(
+        kToolbarIconSize, kToolbarIconSize,
+        ILC_COLOR32 | ILC_MASK, 7, 0);
+    if (!hil) return nullptr;
+
+    for (UINT id : bmp_ids) {
+        HBITMAP hbm = static_cast<HBITMAP>(LoadImageA(
+            hinst, MAKEINTRESOURCEA(id), IMAGE_BITMAP,
+            kToolbarIconSize, kToolbarIconSize, LR_CREATEDIBSECTION));
+        if (hbm) {
+            ImageList_AddMasked(hil, hbm, RGB(255, 0, 255));
+            DeleteObject(hbm);
+        } else {
+            ImageList_Destroy(hil);
+            return nullptr;
+        }
+    }
+    return hil;
+}
 
 static HWND CreateToolbar(HWND parent, HINSTANCE hinst) {
     HWND tb = CreateWindowExA(0, TOOLBARCLASSNAMEA, nullptr,
@@ -251,17 +296,26 @@ static HWND CreateToolbar(HWND parent, HINSTANCE hinst) {
         0, 0, 0, 0, parent, reinterpret_cast<HMENU>(IDC_TOOLBAR), hinst, nullptr);
 
     SendMessage(tb, TB_BUTTONSTRUCTSIZE, sizeof(TBBUTTON), 0);
-    SendMessage(tb, TB_SETPADDING, 0, MAKELPARAM(16, 6));
 
-    static const struct { UINT id; const char* text; } items[] = {
-        {IDM_NEW_VM,   "New VM"},
-        {IDM_EDIT,     "Edit"},
-        {IDM_DELETE,   "Delete"},
-        {0,            nullptr},
-        {IDM_START,    "Start"},
-        {IDM_STOP,     "Stop"},
-        {IDM_REBOOT,   "Reboot"},
-        {IDM_SHUTDOWN, "Shutdown"},
+    HIMAGELIST hil = CreateToolbarImageList(hinst);
+    bool has_icons = (hil != nullptr);
+    if (has_icons) {
+        SendMessage(tb, TB_SETIMAGELIST, 0, reinterpret_cast<LPARAM>(hil));
+        SendMessage(tb, TB_SETPADDING, 0, MAKELPARAM(20, 12));
+    } else {
+        SendMessage(tb, TB_SETPADDING, 0, MAKELPARAM(16, 6));
+    }
+
+    using S = i18n::S;
+    const struct { UINT id; const char* text; int icon_idx; } items[] = {
+        {IDM_NEW_VM,   i18n::tr(S::kToolbarNewVm),   0},
+        {IDM_EDIT,     i18n::tr(S::kToolbarEdit),    1},
+        {IDM_DELETE,   i18n::tr(S::kToolbarDelete),  2},
+        {0,            nullptr,                      -1},
+        {IDM_START,    i18n::tr(S::kToolbarStart),   3},
+        {IDM_STOP,     i18n::tr(S::kToolbarStop),    4},
+        {IDM_REBOOT,   i18n::tr(S::kToolbarReboot),  5},
+        {IDM_SHUTDOWN, i18n::tr(S::kToolbarShutdown),6},
     };
 
     for (const auto& item : items) {
@@ -269,7 +323,7 @@ static HWND CreateToolbar(HWND parent, HINSTANCE hinst) {
         if (item.id == 0) {
             btn.fsStyle = BTNS_SEP;
         } else {
-            btn.iBitmap   = I_IMAGENONE;
+            btn.iBitmap   = has_icons ? item.icon_idx : I_IMAGENONE;
             btn.idCommand = item.id;
             btn.fsState   = TBSTATE_ENABLED;
             btn.fsStyle   = BTNS_BUTTON | BTNS_AUTOSIZE;
@@ -311,6 +365,80 @@ static void ShowDetailControls(Impl* p, bool visible) {
     }
 }
 
+static constexpr int kDisplayHintBarHeight = 20;
+
+// Resize window to fit VM display at 1:1 pixel ratio
+static void ResizeWindowForDisplay(Impl* p, uint32_t vm_width, uint32_t vm_height) {
+    if (!p->hwnd || vm_width == 0 || vm_height == 0) return;
+
+    // Align width to 8 pixels (same as LayoutControls)
+    vm_width = vm_width & ~7u;
+
+    // If user is actively resizing (pending timer), don't let VM callback
+    // override the user's intended size - this prevents the window from
+    // jumping back to an old size while user is still dragging
+    if (p->resize_timer_id != 0) {
+        return;
+    }
+
+    // Pre-update last_sent values to prevent LayoutControls from triggering
+    // a new SetDisplaySize request (avoids feedback loop)
+    p->last_sent_display_w = vm_width;
+    p->last_sent_display_h = vm_height;
+
+    // Get current toolbar and statusbar heights
+    RECT tbr, sbr;
+    GetWindowRect(p->toolbar, &tbr);
+    GetWindowRect(p->statusbar, &sbr);
+    int tb_h = tbr.bottom - tbr.top;
+    int sb_h = sbr.bottom - sbr.top;
+
+    // Calculate tab control padding
+    RECT tab_padding = {0, 0, 100, 100};
+    SendMessage(p->tab, TCM_ADJUSTRECT, TRUE, reinterpret_cast<LPARAM>(&tab_padding));
+    int tab_extra_w = tab_padding.right - tab_padding.left - 100;
+    int tab_extra_h = tab_padding.bottom - tab_padding.top - 100;
+
+    // Target client area size:
+    // Width = left pane + gap + tab padding + display width
+    // Height = toolbar + tab padding + display height + hint bar + statusbar
+    int target_cw = kLeftPaneWidth + 2 + tab_extra_w + static_cast<int>(vm_width);
+    int target_ch = tb_h + tab_extra_h + static_cast<int>(vm_height) + kDisplayHintBarHeight + sb_h;
+
+    // Convert client size to window size
+    RECT wr = {0, 0, target_cw, target_ch};
+    DWORD style = static_cast<DWORD>(GetWindowLongPtr(p->hwnd, GWL_STYLE));
+    DWORD ex_style = static_cast<DWORD>(GetWindowLongPtr(p->hwnd, GWL_EXSTYLE));
+    AdjustWindowRectEx(&wr, style, TRUE, ex_style);
+
+    int new_w = wr.right - wr.left;
+    int new_h = wr.bottom - wr.top;
+
+    // Clamp to screen work area
+    HMONITOR hmon = MonitorFromWindow(p->hwnd, MONITOR_DEFAULTTONEAREST);
+    MONITORINFO mi = {sizeof(mi)};
+    GetMonitorInfo(hmon, &mi);
+    int max_w = mi.rcWork.right - mi.rcWork.left;
+    int max_h = mi.rcWork.bottom - mi.rcWork.top;
+    if (new_w > max_w) new_w = max_w;
+    if (new_h > max_h) new_h = max_h;
+
+    // Get current position and adjust if needed to stay on screen
+    RECT cur_wr;
+    GetWindowRect(p->hwnd, &cur_wr);
+    int x = cur_wr.left;
+    int y = cur_wr.top;
+    if (x + new_w > mi.rcWork.right) x = mi.rcWork.right - new_w;
+    if (y + new_h > mi.rcWork.bottom) y = mi.rcWork.bottom - new_h;
+    if (x < mi.rcWork.left) x = mi.rcWork.left;
+    if (y < mi.rcWork.top) y = mi.rcWork.top;
+
+    SetWindowPos(p->hwnd, nullptr, x, y, new_w, new_h, SWP_NOZORDER | SWP_NOACTIVATE);
+}
+
+// Singleton shell pointer for use in static functions
+static Win32UiShell* g_shell = nullptr;
+
 static void LayoutControls(Impl* p) {
     if (!p->hwnd) return;
 
@@ -338,6 +466,22 @@ static void LayoutControls(Impl* p) {
     int rw = cw - rx;
     if (rw < 0) rw = 0;
 
+    // Hide all right-pane controls first
+    ShowDetailControls(p, false);
+    ShowWindow(p->console, SW_HIDE);
+    ShowWindow(p->console_in, SW_HIDE);
+    ShowWindow(p->send_btn, SW_HIDE);
+    if (p->display_panel) p->display_panel->SetVisible(false);
+
+    // Hide tab control when no VM is selected
+    bool has_selection = p->selected_index >= 0 &&
+                         p->selected_index < static_cast<int>(p->records.size());
+    if (!has_selection) {
+        ShowWindow(p->tab, SW_HIDE);
+        return;
+    }
+
+    ShowWindow(p->tab, SW_SHOW);
     MoveWindow(p->tab, rx, content_top, rw, content_h, TRUE);
 
     RECT page_rc = {0, 0, rw, content_h};
@@ -351,13 +495,6 @@ static void LayoutControls(Impl* p) {
 
     int cur_tab = static_cast<int>(SendMessage(p->tab, TCM_GETCURSEL, 0, 0));
 
-    // Hide everything first, then show the active page
-    ShowDetailControls(p, false);
-    ShowWindow(p->console, SW_HIDE);
-    ShowWindow(p->console_in, SW_HIDE);
-    ShowWindow(p->send_btn, SW_HIDE);
-    if (p->display_panel) p->display_panel->SetVisible(false);
-
     if (cur_tab == kTabInfo) {
         ShowDetailControls(p, true);
 
@@ -366,8 +503,11 @@ static void LayoutControls(Impl* p) {
         TEXTMETRICA tm{};
         GetTextMetricsA(hdc, &tm);
 
-        static const char* kLabels[] = {
-            "ID:", "Location:", "Kernel:", "Disk:", "Memory:", "vCPUs:", "NAT:"
+        const char* kLabels[] = {
+            i18n::tr(i18n::S::kLabelId), i18n::tr(i18n::S::kLabelLocation),
+            i18n::tr(i18n::S::kLabelKernel), i18n::tr(i18n::S::kLabelDisk),
+            i18n::tr(i18n::S::kLabelMemory), i18n::tr(i18n::S::kLabelVcpus),
+            i18n::tr(i18n::S::kLabelNat)
         };
         int label_w = 0;
         for (const char* lbl : kLabels) {
@@ -410,6 +550,25 @@ static void LayoutControls(Impl* p) {
         if (p->display_panel) {
             p->display_panel->SetVisible(true);
             p->display_panel->SetBounds(px, py, pw, ph);
+
+            // Compute display area size (subtract hint bar height)
+            // Align width to 8 pixels for GPU/DRM compatibility
+            uint32_t disp_w = pw > 0 ? (static_cast<uint32_t>(pw) & ~7u) : 0;
+            uint32_t disp_h = ph > kDisplayHintBarHeight
+                ? static_cast<uint32_t>(ph - kDisplayHintBarHeight) : 0;
+
+            // Debounce: schedule resize notification after user stops resizing
+            if (p->display_available && disp_w > 0 && disp_h > 0 &&
+                (disp_w != p->last_sent_display_w || disp_h != p->last_sent_display_h)) {
+                p->pending_display_w = disp_w;
+                p->pending_display_h = disp_h;
+                // Reset timer on each resize event (debounce)
+                if (p->resize_timer_id) {
+                    KillTimer(p->hwnd, Impl::kResizeTimerId);
+                }
+                p->resize_timer_id = SetTimer(p->hwnd, Impl::kResizeTimerId,
+                    Impl::kResizeDebounceMs, nullptr);
+            }
         }
     }
 }
@@ -417,8 +576,12 @@ static void LayoutControls(Impl* p) {
 // ── Update detail panel from selected VM ──
 
 static void UpdateDetailPanel(Impl* p) {
-    static const char* labels[] = {
-        "ID:", "Location:", "Kernel:", "Disk:", "Memory:", "vCPUs:", "NAT:"
+    using S = i18n::S;
+    const char* labels[] = {
+        i18n::tr(S::kLabelId), i18n::tr(S::kLabelLocation),
+        i18n::tr(S::kLabelKernel), i18n::tr(S::kLabelDisk),
+        i18n::tr(S::kLabelMemory), i18n::tr(S::kLabelVcpus),
+        i18n::tr(S::kLabelNat)
     };
     for (int i = 0; i < Impl::kDetailRows; ++i)
         SetWindowTextA(p->detail_labels[i], labels[i]);
@@ -438,10 +601,10 @@ static void UpdateDetailPanel(Impl* p) {
     SetWindowTextA(p->detail_values[1], spec.vm_dir.c_str());
     SetWindowTextA(p->detail_values[2], spec.kernel_path.c_str());
     SetWindowTextA(p->detail_values[3],
-        spec.disk_path.empty() ? "(none)" : spec.disk_path.c_str());
+        spec.disk_path.empty() ? i18n::tr(S::kNone) : spec.disk_path.c_str());
     SetWindowTextA(p->detail_values[4], mb_str.c_str());
     SetWindowTextA(p->detail_values[5], cpu_str.c_str());
-    SetWindowTextA(p->detail_values[6], spec.nat_enabled ? "Enabled" : "Disabled");
+    SetWindowTextA(p->detail_values[6], spec.nat_enabled ? i18n::tr(S::kNatEnabled) : i18n::tr(S::kNatDisabled));
 }
 
 // ── Update toolbar/menu enable state ──
@@ -490,8 +653,6 @@ static void PopulateListBox(Win32UiShell::Impl* p) {
 
 // ── WndProc ──
 
-static Win32UiShell* g_shell = nullptr;
-
 static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     auto* shell = g_shell;
     if (!shell) return DefWindowProcA(hwnd, msg, wp, lp);
@@ -501,6 +662,25 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     switch (msg) {
     case WM_SIZE:
         if (p) LayoutControls(p);
+        return 0;
+
+    case WM_TIMER:
+        if (p && wp == Impl::kResizeTimerId) {
+            KillTimer(hwnd, Impl::kResizeTimerId);
+            p->resize_timer_id = 0;
+            // Send the debounced display size to VM
+            if (p->pending_display_w > 0 && p->pending_display_h > 0 &&
+                (p->pending_display_w != p->last_sent_display_w ||
+                 p->pending_display_h != p->last_sent_display_h)) {
+                p->last_sent_display_w = p->pending_display_w;
+                p->last_sent_display_h = p->pending_display_h;
+                if (p->selected_index >= 0 &&
+                    p->selected_index < static_cast<int>(p->records.size())) {
+                    const auto& vm_id = p->records[p->selected_index].spec.vm_id;
+                    shell->manager_.SetDisplaySize(vm_id, p->pending_display_w, p->pending_display_h);
+                }
+            }
+        }
         return 0;
 
     case WM_COMMAND: {
@@ -573,7 +753,7 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             if (ShowCreateVmDialog(hwnd, shell->manager_, &error)) {
                 shell->RefreshVmList();
             } else if (!error.empty()) {
-                MessageBoxA(hwnd, error.c_str(), "Error", MB_OK | MB_ICONERROR);
+                MessageBoxA(hwnd, error.c_str(), i18n::tr(i18n::S::kError), MB_OK | MB_ICONERROR);
             }
             return 0;
         }
@@ -592,14 +772,14 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             p->display_available = false;
             SendMessage(p->tab, TCM_SETCURSEL, kTabConsole, 0);
             LayoutControls(p);
-            SendMessageA(p->statusbar, SB_SETTEXTA, 0,
-                reinterpret_cast<LPARAM>(("Starting " + vm_id + "...").c_str()));
+            auto status = i18n::fmt(i18n::S::kStatusStarting, vm_id.c_str());
+            SendMessageA(p->statusbar, SB_SETTEXTA, 0, reinterpret_cast<LPARAM>(status.c_str()));
             std::string error;
             bool ok = shell->manager_.StartVm(vm_id, &error);
             shell->RefreshVmList();
-            auto msg = ok ? (vm_id + " started") : ("Error: " + error);
-            SendMessageA(p->statusbar, SB_SETTEXTA, 0,
-                reinterpret_cast<LPARAM>(msg.c_str()));
+            status = ok ? i18n::fmt(i18n::S::kStatusStarted, vm_id.c_str())
+                        : (std::string(i18n::tr(i18n::S::kStatusErrorPrefix)) + error);
+            SendMessageA(p->statusbar, SB_SETTEXTA, 0, reinterpret_cast<LPARAM>(status.c_str()));
             return 0;
         }
         case IDM_STOP: {
@@ -610,9 +790,9 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             std::string error;
             bool ok = shell->manager_.StopVm(vm_id, &error);
             shell->RefreshVmList();
-            auto msg = ok ? (vm_id + " stopped") : ("Error: " + error);
-            SendMessageA(p->statusbar, SB_SETTEXTA, 0,
-                reinterpret_cast<LPARAM>(msg.c_str()));
+            auto status = ok ? i18n::fmt(i18n::S::kStatusStopped, vm_id.c_str())
+                             : (std::string(i18n::tr(i18n::S::kStatusErrorPrefix)) + error);
+            SendMessageA(p->statusbar, SB_SETTEXTA, 0, reinterpret_cast<LPARAM>(status.c_str()));
             return 0;
         }
         case IDM_REBOOT: {
@@ -623,9 +803,9 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             std::string error;
             bool ok = shell->manager_.RebootVm(vm_id, &error);
             shell->RefreshVmList();
-            auto msg = ok ? (vm_id + " rebooted") : ("Error: " + error);
-            SendMessageA(p->statusbar, SB_SETTEXTA, 0,
-                reinterpret_cast<LPARAM>(msg.c_str()));
+            auto status = ok ? i18n::fmt(i18n::S::kStatusRebooted, vm_id.c_str())
+                             : (std::string(i18n::tr(i18n::S::kStatusErrorPrefix)) + error);
+            SendMessageA(p->statusbar, SB_SETTEXTA, 0, reinterpret_cast<LPARAM>(status.c_str()));
             return 0;
         }
         case IDM_SHUTDOWN: {
@@ -636,9 +816,9 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             std::string error;
             bool ok = shell->manager_.ShutdownVm(vm_id, &error);
             shell->RefreshVmList();
-            auto msg = ok ? (vm_id + " shutting down...") : ("Error: " + error);
-            SendMessageA(p->statusbar, SB_SETTEXTA, 0,
-                reinterpret_cast<LPARAM>(msg.c_str()));
+            auto status = ok ? i18n::fmt(i18n::S::kStatusShuttingDown, vm_id.c_str())
+                             : (std::string(i18n::tr(i18n::S::kStatusErrorPrefix)) + error);
+            SendMessageA(p->statusbar, SB_SETTEXTA, 0, reinterpret_cast<LPARAM>(status.c_str()));
             return 0;
         }
         case IDM_EDIT: {
@@ -650,10 +830,10 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             std::string error;
             if (ShowEditVmDialog(hwnd, shell->manager_, rec, &error)) {
                 shell->RefreshVmList();
-                SendMessageA(p->statusbar, SB_SETTEXTA, 0,
-                    reinterpret_cast<LPARAM>((vm_name + " updated").c_str()));
+                auto status = i18n::fmt(i18n::S::kStatusVmUpdated, vm_name.c_str());
+                SendMessageA(p->statusbar, SB_SETTEXTA, 0, reinterpret_cast<LPARAM>(status.c_str()));
             } else if (!error.empty()) {
-                MessageBoxA(hwnd, error.c_str(), "Error", MB_OK | MB_ICONERROR);
+                MessageBoxA(hwnd, error.c_str(), i18n::tr(i18n::S::kError), MB_OK | MB_ICONERROR);
             }
             return 0;
         }
@@ -663,18 +843,28 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 break;
             std::string vm_id   = p->records[p->selected_index].spec.vm_id;
             std::string vm_name = p->records[p->selected_index].spec.name;
-            std::string prompt = "Are you sure you want to delete '" +
-                vm_name + "'?\nThis will remove all VM files permanently.";
-            if (MessageBoxA(hwnd, prompt.c_str(), "Delete VM",
+            auto prompt = i18n::fmt(i18n::S::kConfirmDeleteMsg, vm_name.c_str());
+            if (MessageBoxA(hwnd, prompt.c_str(), i18n::tr(i18n::S::kConfirmDeleteTitle),
                     MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) == IDYES) {
                 std::string error;
                 if (shell->manager_.DeleteVm(vm_id, &error)) {
                     p->vm_ui_states.erase(vm_id);
                     shell->RefreshVmList();
+                    if (p->records.empty()) {
+                        ShowWindow(p->tab, SW_HIDE);
+                    } else {
+                        // Simulate click on current selection to restore VM UI state
+                        int new_sel = p->selected_index;
+                        p->selected_index = -1;
+                        SendMessageA(p->listview, LB_SETCURSEL, new_sel, 0);
+                        SendMessageA(hwnd, WM_COMMAND,
+                            MAKEWPARAM(IDC_LISTVIEW, LBN_SELCHANGE),
+                            reinterpret_cast<LPARAM>(p->listview));
+                    }
                     SendMessageA(p->statusbar, SB_SETTEXTA, 0,
-                        reinterpret_cast<LPARAM>("VM deleted"));
+                        reinterpret_cast<LPARAM>(i18n::tr(i18n::S::kStatusVmDeleted)));
                 } else {
-                    MessageBoxA(hwnd, error.c_str(), "Error", MB_OK | MB_ICONERROR);
+                    MessageBoxA(hwnd, error.c_str(), i18n::tr(i18n::S::kError), MB_OK | MB_ICONERROR);
                 }
             }
             return 0;
@@ -757,15 +947,15 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
 
             // Line 1: VM name (bold/normal)
             SetTextColor(dis->hDC, fg);
-            TextOutA(dis->hDC, x, y, rec.spec.name.c_str(),
-                     static_cast<int>(rec.spec.name.size()));
+            auto name_w = i18n::to_wide(rec.spec.name);
+            TextOutW(dis->hDC, x, y, name_w.c_str(), static_cast<int>(name_w.size()));
 
             // State tag to the right of the name
             SIZE name_sz{};
-            GetTextExtentPoint32A(dis->hDC, rec.spec.name.c_str(),
-                static_cast<int>(rec.spec.name.size()), &name_sz);
+            GetTextExtentPoint32W(dis->hDC, name_w.c_str(),
+                static_cast<int>(name_w.size()), &name_sz);
 
-            const char* state_text = StateText(rec.state);
+            auto state_w = i18n::to_wide(StateText(rec.state));
             COLORREF state_color;
             if (rec.state == VmPowerState::kRunning)
                 state_color = selected ? fg : RGB(0, 128, 0);
@@ -774,17 +964,17 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             else
                 state_color = dim;
             SetTextColor(dis->hDC, state_color);
-            TextOutA(dis->hDC, x + name_sz.cx + 12, y, state_text,
-                     static_cast<int>(strlen(state_text)));
+            TextOutW(dis->hDC, x + name_sz.cx + 12, y, state_w.c_str(),
+                     static_cast<int>(state_w.size()));
 
             // Line 2: vCPU / Memory
             y += line_h + 2;
             SelectObject(dis->hDC, normal);
             SetTextColor(dis->hDC, dim);
-            std::string detail = std::to_string(rec.spec.cpu_count) + " vCPU, " +
-                                 std::to_string(rec.spec.memory_mb) + " MB RAM";
-            TextOutA(dis->hDC, x, y, detail.c_str(),
-                     static_cast<int>(detail.size()));
+            auto detail = i18n::fmt(i18n::S::kDetailVcpuRam,
+                static_cast<unsigned>(rec.spec.cpu_count), static_cast<unsigned>(rec.spec.memory_mb));
+            auto detail_w = i18n::to_wide(detail);
+            TextOutW(dis->hDC, x, y, detail_w.c_str(), static_cast<int>(detail_w.size()));
 
             SelectObject(dis->hDC, old_font);
 
@@ -807,6 +997,26 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     }
 
     case WM_CLOSE:
+        // Check if any VM is still running
+        {
+            auto vms = shell->manager_.ListVms();
+            int running_count = 0;
+            for (const auto& vm : vms) {
+                if (vm.state == VmPowerState::kStarting ||
+                    vm.state == VmPowerState::kRunning ||
+                    vm.state == VmPowerState::kStopping) {
+                    ++running_count;
+                }
+            }
+            if (running_count > 0) {
+                auto exit_msg = i18n::fmt(i18n::S::kConfirmExitMsg, static_cast<unsigned>(running_count));
+                int result = MessageBoxA(hwnd, exit_msg.c_str(), i18n::tr(i18n::S::kConfirmExitTitle),
+                    MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2);
+                if (result != IDYES) {
+                    return 0;
+                }
+            }
+        }
         // Save geometry
         {
             RECT wr;
@@ -874,9 +1084,10 @@ Win32UiShell::Win32UiShell(ManagerService& manager)
     int w = (geo.width > 0) ? geo.width : 1024;
     int h = (geo.height > 0) ? geo.height : 680;
 
+    i18n::InitLanguage();
     impl_->menu_bar = BuildMenuBar();
 
-    impl_->hwnd = CreateWindowExA(0, kWndClass, "TenBox Manager",
+    impl_->hwnd = CreateWindowExA(0, kWndClass, i18n::tr(i18n::S::kAppTitle),
         WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
         x, y, w, h,
         nullptr, impl_->menu_bar, hinst, nullptr);
@@ -903,13 +1114,13 @@ Win32UiShell::Win32UiShell(ManagerService& manager)
     {
         TCITEMA ti{};
         ti.mask = TCIF_TEXT;
-        ti.pszText = const_cast<char*>("Info");
+        ti.pszText = const_cast<char*>(i18n::tr(i18n::S::kTabInfo));
         SendMessageA(impl_->tab, TCM_INSERTITEMA, kTabInfo,
             reinterpret_cast<LPARAM>(&ti));
-        ti.pszText = const_cast<char*>("Console");
+        ti.pszText = const_cast<char*>(i18n::tr(i18n::S::kTabConsole));
         SendMessageA(impl_->tab, TCM_INSERTITEMA, kTabConsole,
             reinterpret_cast<LPARAM>(&ti));
-        ti.pszText = const_cast<char*>("Display");
+        ti.pszText = const_cast<char*>(i18n::tr(i18n::S::kTabDisplay));
         SendMessageA(impl_->tab, TCM_INSERTITEMA, kTabDisplay,
             reinterpret_cast<LPARAM>(&ti));
     }
@@ -919,8 +1130,8 @@ Win32UiShell::Win32UiShell(ManagerService& manager)
         impl_->detail_labels[i] = CreateWindowExA(0, "STATIC", "",
             WS_CHILD | SS_RIGHT,
             0, 0, 0, 0, impl_->hwnd, nullptr, hinst, nullptr);
-        impl_->detail_values[i] = CreateWindowExA(0, "STATIC", "",
-            WS_CHILD | SS_LEFT | SS_PATHELLIPSIS,
+        impl_->detail_values[i] = CreateWindowExA(0, "EDIT", "",
+            WS_CHILD | ES_READONLY | ES_AUTOHSCROLL,
             0, 0, 0, 0, impl_->hwnd, nullptr, hinst, nullptr);
         SendMessage(impl_->detail_labels[i], WM_SETFONT,
             reinterpret_cast<WPARAM>(impl_->ui_font), FALSE);
@@ -946,11 +1157,12 @@ Win32UiShell::Win32UiShell(ManagerService& manager)
         reinterpret_cast<HMENU>(IDC_CONSOLE_IN), hinst, nullptr);
     SendMessage(impl_->console_in, WM_SETFONT,
         reinterpret_cast<WPARAM>(impl_->mono_font), FALSE);
-    SendMessageA(impl_->console_in, EM_SETCUEBANNER, FALSE,
-        reinterpret_cast<LPARAM>(L"Type command and press Enter\x2026"));
+    auto placeholder_w = i18n::to_wide(i18n::tr(i18n::S::kConsolePlaceholder));
+    SendMessageW(impl_->console_in, EM_SETCUEBANNER, FALSE,
+        reinterpret_cast<LPARAM>(placeholder_w.c_str()));
 
     // Send button
-    impl_->send_btn = CreateWindowExA(0, "BUTTON", "Send",
+    impl_->send_btn = CreateWindowExA(0, "BUTTON", i18n::tr(i18n::S::kSend),
         WS_CHILD | WS_VISIBLE | BS_PUSHBUTTON,
         0, 0, 0, 0, impl_->hwnd,
         reinterpret_cast<HMENU>(IDC_SEND_BTN), hinst, nullptr);
@@ -1020,8 +1232,8 @@ Win32UiShell::Win32UiShell(ManagerService& manager)
         });
 
     manager_.SetDisplayStateCallback(
-        [this](const std::string& vm_id, bool active, uint32_t /*width*/, uint32_t /*height*/) {
-            InvokeOnUiThread([this, vm_id, active]() {
+        [this](const std::string& vm_id, bool active, uint32_t width, uint32_t height) {
+            InvokeOnUiThread([this, vm_id, active, width, height]() {
                 bool is_current = (impl_->selected_index >= 0 &&
                     impl_->selected_index < static_cast<int>(impl_->records.size()) &&
                     impl_->records[impl_->selected_index].spec.vm_id == vm_id);
@@ -1032,6 +1244,8 @@ Win32UiShell::Win32UiShell(ManagerService& manager)
                     impl_->display_available = true;
                     state.current_tab = kTabDisplay;
                     SendMessage(impl_->tab, TCM_SETCURSEL, kTabDisplay, 0);
+                    // Resize window to fit VM display at 1:1 pixel ratio
+                    ResizeWindowForDisplay(impl_.get(), width, height);
                 } else {
                     impl_->display_available = false;
                     state.current_tab = kTabConsole;
@@ -1165,9 +1379,8 @@ void Win32UiShell::RefreshVmList() {
     UpdateDetailPanel(impl_.get());
     UpdateCommandStates(impl_.get());
 
-    auto status = std::to_string(impl_->records.size()) + " VM(s) loaded";
-    SendMessageA(impl_->statusbar, SB_SETTEXTA, 0,
-        reinterpret_cast<LPARAM>(status.c_str()));
+    auto status = i18n::fmt(i18n::S::kStatusVmsLoaded, static_cast<unsigned>(impl_->records.size()));
+    SendMessageA(impl_->statusbar, SB_SETTEXTA, 0, reinterpret_cast<LPARAM>(status.c_str()));
 }
 
 void Win32UiShell::InvokeOnUiThread(std::function<void()> fn) {

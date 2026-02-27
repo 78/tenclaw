@@ -169,22 +169,48 @@ bool ManagerService::CreateVm(const VmCreateRequest& req, std::string* error) {
 }
 
 bool ManagerService::DeleteVm(const std::string& vm_id, std::string* error) {
-    auto it = vms_.find(vm_id);
-    if (it == vms_.end()) {
-        if (error) *error = "vm not found";
-        return false;
-    }
-    VmRecord& vm = it->second;
-
-    if (vm.state != VmPowerState::kStopped) {
+    std::string vm_dir;
+    std::thread read_thread_to_join;
+    
+    // Step 1: Stop VM if running (this acquires lock internally)
+    {
         std::string stop_err;
         StopVm(vm_id, &stop_err);
     }
 
-    std::string vm_dir = vm.spec.vm_dir;
-    vms_.erase(it);
+    // Step 2: Get VM directory and ensure read thread is stopped
+    {
+        std::lock_guard<std::mutex> lock(vms_mutex_);
+        auto it = vms_.find(vm_id);
+        if (it == vms_.end()) {
+            if (error) *error = "vm not found";
+            return false;
+        }
+        
+        vm_dir = it->second.spec.vm_dir;
+        
+        // Stop read thread if still running
+        if (it->second.runtime.read_thread.joinable()) {
+            it->second.runtime.read_running.store(false);
+            if (it->second.runtime.pipe_handle) {
+                CancelIoEx(reinterpret_cast<HANDLE>(it->second.runtime.pipe_handle), nullptr);
+            }
+            // Move thread out to join outside the lock
+            read_thread_to_join = std::move(it->second.runtime.read_thread);
+        }
+        
+        // Erase VM record
+        vms_.erase(it);
+    }
+    
+    // Step 3: Join read thread outside the lock (if needed)
+    if (read_thread_to_join.joinable()) {
+        read_thread_to_join.join();
+    }
+
     SaveVmPaths();
 
+    // Step 4: Delete VM directory
     if (!vm_dir.empty()) {
         std::error_code ec;
         fs::remove_all(vm_dir, ec);
@@ -301,29 +327,63 @@ bool ManagerService::StartVm(const std::string& vm_id, std::string* error) {
 }
 
 bool ManagerService::StopVm(const std::string& vm_id, std::string* error) {
-    auto it = vms_.find(vm_id);
-    if (it == vms_.end()) {
-        if (error) *error = "vm not found";
-        return false;
-    }
-    VmRecord& vm = it->second;
-    if (vm.state == VmPowerState::kStopped) return true;
+    HANDLE process_handle = nullptr;
+    std::thread read_thread_to_join;
+    HANDLE pipe_handle = nullptr;
+    
+    {
+        std::lock_guard<std::mutex> lock(vms_mutex_);
+        auto it = vms_.find(vm_id);
+        if (it == vms_.end()) {
+            if (error) *error = "vm not found";
+            return false;
+        }
+        VmRecord& vm = it->second;
+        if (vm.state == VmPowerState::kStopped) return true;
 
-    vm.state = VmPowerState::kStopping;
-    ipc::Message msg;
-    msg.channel = ipc::Channel::kControl;
-    msg.kind = ipc::Kind::kRequest;
-    msg.type = "runtime.command";
-    msg.vm_id = vm_id;
-    msg.request_id = GetTickCount64();
-    msg.fields["command"] = "stop";
-    SendRuntimeMessage(vm, msg);
+        vm.state = VmPowerState::kStopping;
+        process_handle = reinterpret_cast<HANDLE>(vm.runtime.process_handle);
+        pipe_handle = reinterpret_cast<HANDLE>(vm.runtime.pipe_handle);
+        
+        ipc::Message msg;
+        msg.channel = ipc::Channel::kControl;
+        msg.kind = ipc::Kind::kRequest;
+        msg.type = "runtime.command";
+        msg.vm_id = vm_id;
+        msg.request_id = GetTickCount64();
+        msg.fields["command"] = "stop";
+        SendRuntimeMessage(vm, msg);
 
-    if (vm.runtime.process_handle) {
-        WaitForSingleObject(reinterpret_cast<HANDLE>(vm.runtime.process_handle), 3000);
+        // Stop read thread: set flag and cancel IO (inside lock)
+        if (vm.runtime.read_thread.joinable()) {
+            vm.runtime.read_running.store(false);
+            if (pipe_handle) {
+                CancelIoEx(pipe_handle, nullptr);
+            }
+            // Move thread out to join outside the lock
+            read_thread_to_join = std::move(vm.runtime.read_thread);
+        }
     }
-    CloseRuntime(vm);
-    vm.state = VmPowerState::kStopped;
+
+    // Wait for process and join read thread outside the lock
+    if (process_handle) {
+        WaitForSingleObject(process_handle, 3000);
+    }
+    if (read_thread_to_join.joinable()) {
+        read_thread_to_join.join();
+    }
+
+    // Cleanup handles and update state (inside lock)
+    {
+        std::lock_guard<std::mutex> lock(vms_mutex_);
+        auto it = vms_.find(vm_id);
+        if (it == vms_.end()) {
+            if (error) *error = "vm not found";
+            return false;
+        }
+        CleanupRuntimeHandles(it->second);
+        it->second.state = VmPowerState::kStopped;
+    }
     return true;
 }
 
@@ -551,6 +611,31 @@ bool ManagerService::SendPointerEvent(const std::string& vm_id,
     msg.fields["x"] = std::to_string(x);
     msg.fields["y"] = std::to_string(y);
     msg.fields["buttons"] = std::to_string(buttons);
+
+    std::string encoded = ipc::Encode(msg);
+    DWORD written = 0;
+    return WriteFile(pipe, encoded.data(), static_cast<DWORD>(encoded.size()), &written, nullptr)
+        && written == encoded.size();
+}
+
+bool ManagerService::SetDisplaySize(const std::string& vm_id, uint32_t width, uint32_t height) {
+    HANDLE pipe = INVALID_HANDLE_VALUE;
+    {
+        std::lock_guard<std::mutex> lock(vms_mutex_);
+        auto it = vms_.find(vm_id);
+        if (it == vms_.end()) return false;
+        pipe = reinterpret_cast<HANDLE>(it->second.runtime.pipe_handle);
+    }
+    if (!pipe || pipe == INVALID_HANDLE_VALUE) return false;
+
+    ipc::Message msg;
+    msg.channel = ipc::Channel::kDisplay;
+    msg.kind = ipc::Kind::kRequest;
+    msg.type = "display.set_size";
+    msg.vm_id = vm_id;
+    msg.request_id = GetTickCount64();
+    msg.fields["width"] = std::to_string(width);
+    msg.fields["height"] = std::to_string(height);
 
     std::string encoded = ipc::Encode(msg);
     DWORD written = 0;

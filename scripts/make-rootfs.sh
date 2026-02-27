@@ -115,7 +115,7 @@ cat > /etc/systemd/system/serial-getty@ttyS0.service.d/autologin.conf << 'INNER'
 [Service]
 ExecStart=
 ExecStart=-/sbin/agetty --autologin root --noclear %I 115200 linux
-INNER 
+INNER
 mkdir -p /etc/lightdm/lightdm.conf.d
 cat > /etc/lightdm/lightdm.conf.d/50-autologin.conf << 'LDM'
 [Seat:*]
@@ -127,6 +127,25 @@ LDM
 if [ -f /etc/pam.d/lightdm-autologin ]; then
     sed -i '/pam_succeed_if.*uid/d' /etc/pam.d/lightdm-autologin
 fi
+
+# Auto-resize display when host window changes (virtio-gpu hotplug)
+echo "Setting up virtio-gpu auto-resize..."
+cat > /etc/udev/rules.d/95-virtio-gpu-resize.rules << 'UDEV'
+ACTION=="change", SUBSYSTEM=="drm", ENV{HOTPLUG}=="1", RUN+="/usr/bin/bash -c '/usr/local/bin/virtio-gpu-resize.sh &'"
+UDEV
+echo "  Created: /etc/udev/rules.d/95-virtio-gpu-resize.rules"
+
+cat > /usr/local/bin/virtio-gpu-resize.sh << 'RESIZE'
+#!/bin/bash
+sleep 0.1
+export DISPLAY=:0
+export XAUTHORITY=/root/.Xauthority
+for output in Virtual-1 Virtual-0; do
+    xrandr --output "$output" --auto 2>/dev/null && break
+done
+RESIZE
+chmod +x /usr/local/bin/virtio-gpu-resize.sh
+echo "  Created: /usr/local/bin/virtio-gpu-resize.sh"
 
 mkdir -p /etc/network
 cat > /etc/network/interfaces << 'NET'

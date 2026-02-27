@@ -42,6 +42,9 @@ constexpr uint32_t VIRTIO_GPU_FORMAT_R8G8B8X8_UNORM = 134;
 // Feature bits
 constexpr uint64_t VIRTIO_GPU_F_EDID = 1ULL << 1;
 
+// Config events (spec 5.7.6.1)
+constexpr uint32_t VIRTIO_GPU_EVENT_DISPLAY = 1;
+
 // Control header flags
 constexpr uint32_t VIRTIO_GPU_FLAG_FENCE = 1;
 
@@ -167,6 +170,9 @@ public:
     void SetCursorCallback(CursorCallback cb) { cursor_callback_ = std::move(cb); }
     void SetScanoutStateCallback(ScanoutStateCallback cb) { scanout_state_callback_ = std::move(cb); }
 
+    // Update display resolution and notify guest to re-query display info
+    void SetDisplaySize(uint32_t width, uint32_t height);
+
     uint32_t GetDeviceId() const override { return 16; }
     uint64_t GetDeviceFeatures() const override;
     uint32_t GetNumQueues() const override { return 2; }
@@ -226,6 +232,8 @@ private:
 
     std::unordered_map<uint32_t, GpuResource> resources_;
     uint32_t scanout_resource_id_ = 0;
+    uint32_t scanout_width_ = 0;
+    uint32_t scanout_height_ = 0;
 
     // Cursor state
     uint32_t cursor_resource_id_ = 0;
