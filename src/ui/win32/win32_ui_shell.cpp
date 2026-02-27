@@ -1117,8 +1117,25 @@ void Win32UiShell::Hide() {
 void Win32UiShell::Run() {
     MSG msg;
     while (GetMessage(&msg, nullptr, 0, 0)) {
-        TranslateMessage(&msg);
-        DispatchMessage(&msg);
+        // Intercept keyboard messages and forward to DisplayPanel when Display tab is visible.
+        // This handles the case where focus is on listbox or other controls.
+        bool forwarded = false;
+        if (msg.message == WM_KEYDOWN || msg.message == WM_KEYUP ||
+            msg.message == WM_SYSKEYDOWN || msg.message == WM_SYSKEYUP) {
+            int cur_tab = static_cast<int>(SendMessage(impl_->tab, TCM_GETCURSEL, 0, 0));
+            if (cur_tab == kTabDisplay && impl_->display_available && impl_->display_panel) {
+                HWND panel_hwnd = impl_->display_panel->Handle();
+                // Don't intercept if focus is already on panel or on console input
+                if (msg.hwnd != panel_hwnd && msg.hwnd != impl_->console_in) {
+                    SendMessage(panel_hwnd, msg.message, msg.wParam, msg.lParam);
+                    forwarded = true;
+                }
+            }
+        }
+        if (!forwarded) {
+            TranslateMessage(&msg);
+            DispatchMessage(&msg);
+        }
     }
 }
 

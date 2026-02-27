@@ -326,8 +326,8 @@ void DisplayPanel::OnPaint() {
     COLORREF text_color = captured_ ? RGB(255, 255, 255) : RGB(200, 200, 200);
     SetTextColor(hdc, text_color);
     const char* hint = captured_
-        ? "Press Right Alt to release | Input captured"
-        : "Click to capture keyboard & mouse";
+        ? "Press Right Alt to release | Full input capture (system keys)"
+        : "Click to capture system keys | Normal typing works when focused";
     DrawTextA(hdc, hint, -1, &hint_rc,
         DT_CENTER | DT_VCENTER | DT_SINGLELINE);
 
@@ -335,7 +335,8 @@ void DisplayPanel::OnPaint() {
 }
 
 void DisplayPanel::HandleKey(UINT msg, WPARAM wp, LPARAM lp) {
-    if (!captured_) return;
+    // When captured, low-level hook handles keys, so this is only called
+    // in non-captured state. Allow normal key input even without capture.
 
     bool pressed = (msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN);
     uint32_t vk = static_cast<uint32_t>(wp);
@@ -345,7 +346,7 @@ void DisplayPanel::HandleKey(UINT msg, WPARAM wp, LPARAM lp) {
     bool extended = (lp >> 24) & 1;
 
     // Use Right Alt to release capture (fallback if LL hook missed it)
-    if (pressed && (vk == VK_MENU || vk == VK_RMENU) && extended) {
+    if (captured_ && pressed && (vk == VK_MENU || vk == VK_RMENU) && extended) {
         SetCaptured(false);
         return;
     }
@@ -362,12 +363,18 @@ void DisplayPanel::HandleKey(UINT msg, WPARAM wp, LPARAM lp) {
 }
 
 void DisplayPanel::HandleMouse(UINT msg, WPARAM wp, LPARAM lp) {
-    if (!captured_ && msg == WM_LBUTTONDOWN) {
-        SetFocus(hwnd_);
-        SetCaptured(true);
-        return;
+    // Handle focus and capture mode on left click
+    if (msg == WM_LBUTTONDOWN) {
+        if (GetFocus() != hwnd_) {
+            SetFocus(hwnd_);
+        }
+        // Enter capture mode for keyboard system keys
+        if (!captured_) {
+            SetCaptured(true);
+        }
     }
-    if (!captured_) return;
+
+    // Always send mouse events when mouse is over the panel (no focus required)
 
     uint32_t old_buttons = mouse_buttons_;
 
