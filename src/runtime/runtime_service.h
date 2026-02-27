@@ -53,11 +53,14 @@ private:
 class ManagedDisplayPort final : public DisplayPort {
 public:
     void SubmitFrame(const DisplayFrame& frame) override;
+    void SubmitCursor(const CursorInfo& cursor) override;
     void SetFrameHandler(std::function<void(const DisplayFrame&)> handler);
+    void SetCursorHandler(std::function<void(const CursorInfo&)> handler);
 
 private:
     std::mutex mutex_;
-    std::function<void(const DisplayFrame&)> handler_;
+    std::function<void(const DisplayFrame&)> frame_handler_;
+    std::function<void(const CursorInfo&)> cursor_handler_;
 };
 
 class RuntimeControlService {

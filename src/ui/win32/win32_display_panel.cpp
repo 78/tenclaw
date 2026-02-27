@@ -18,6 +18,7 @@ DisplayPanel::DisplayPanel() = default;
 DisplayPanel::~DisplayPanel() {
     SetCaptured(false);
     if (hwnd_) DestroyWindow(hwnd_);
+    if (custom_cursor_) DestroyCursor(custom_cursor_);
 }
 
 static void RegisterPanelClass(HINSTANCE hinst) {
@@ -88,6 +89,65 @@ void DisplayPanel::UpdateFrame(const DisplayFrame& frame) {
 
     if (hwnd_) {
         InvalidateRect(hwnd_, nullptr, FALSE);
+    }
+}
+
+void DisplayPanel::UpdateCursor(const CursorInfo& cursor) {
+    if (!cursor.image_updated || cursor.width == 0 || cursor.height == 0) {
+        return;
+    }
+
+    HCURSOR new_cursor = nullptr;
+    if (cursor.visible && !cursor.pixels.empty()) {
+        uint32_t w = cursor.width;
+        uint32_t h = cursor.height;
+
+        BITMAPV5HEADER bi{};
+        bi.bV5Size = sizeof(BITMAPV5HEADER);
+        bi.bV5Width = static_cast<LONG>(w);
+        bi.bV5Height = -static_cast<LONG>(h);  // Top-down
+        bi.bV5Planes = 1;
+        bi.bV5BitCount = 32;
+        bi.bV5Compression = BI_BITFIELDS;
+        bi.bV5RedMask = 0x00FF0000;
+        bi.bV5GreenMask = 0x0000FF00;
+        bi.bV5BlueMask = 0x000000FF;
+        bi.bV5AlphaMask = 0xFF000000;
+
+        HDC hdc = GetDC(nullptr);
+        void* bits = nullptr;
+        HBITMAP color_bmp = CreateDIBSection(hdc, reinterpret_cast<BITMAPINFO*>(&bi),
+            DIB_RGB_COLORS, &bits, nullptr, 0);
+        if (color_bmp && bits) {
+            std::memcpy(bits, cursor.pixels.data(),
+                (std::min)(cursor.pixels.size(), static_cast<size_t>(w * h * 4)));
+
+            HBITMAP mask_bmp = CreateBitmap(static_cast<int>(w), static_cast<int>(h), 1, 1, nullptr);
+
+            ICONINFO ii{};
+            ii.fIcon = FALSE;
+            ii.xHotspot = cursor.hot_x;
+            ii.yHotspot = cursor.hot_y;
+            ii.hbmMask = mask_bmp;
+            ii.hbmColor = color_bmp;
+            new_cursor = CreateIconIndirect(&ii);
+
+            DeleteObject(mask_bmp);
+            DeleteObject(color_bmp);
+        }
+        ReleaseDC(nullptr, hdc);
+    }
+
+    {
+        std::lock_guard<std::mutex> lock(cursor_mutex_);
+        if (custom_cursor_) {
+            DestroyCursor(custom_cursor_);
+        }
+        custom_cursor_ = new_cursor;
+    }
+
+    if (hwnd_ && new_cursor) {
+        SetCursor(new_cursor);
     }
 }
 
@@ -378,6 +438,16 @@ LRESULT CALLBACK DisplayPanel::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp
         self->SetCaptured(false);
         self->mouse_buttons_ = 0;
         return 0;
+
+    case WM_SETCURSOR:
+        if (LOWORD(lp) == HTCLIENT) {
+            std::lock_guard<std::mutex> lock(self->cursor_mutex_);
+            if (self->custom_cursor_) {
+                SetCursor(self->custom_cursor_);
+                return TRUE;
+            }
+        }
+        break;
 
     case WM_ERASEBKGND:
         return 1;

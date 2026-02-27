@@ -155,6 +155,7 @@ static_assert(sizeof(VirtioGpuCtrlHdr) == 24);
 class VirtioGpuDevice : public VirtioDeviceOps {
 public:
     using FrameCallback = std::function<void(const DisplayFrame&)>;
+    using CursorCallback = std::function<void(const CursorInfo&)>;
 
     VirtioGpuDevice(uint32_t width, uint32_t height);
     ~VirtioGpuDevice() override = default;
@@ -162,6 +163,7 @@ public:
     void SetMmioDevice(VirtioMmioDevice* mmio) { mmio_ = mmio; }
     void SetMemMap(const GuestMemMap& mem) { mem_ = mem; }
     void SetFrameCallback(FrameCallback cb) { frame_callback_ = std::move(cb); }
+    void SetCursorCallback(CursorCallback cb) { cursor_callback_ = std::move(cb); }
 
     uint32_t GetDeviceId() const override { return 16; }
     uint64_t GetDeviceFeatures() const override;
@@ -213,6 +215,7 @@ private:
     VirtioMmioDevice* mmio_ = nullptr;
     GuestMemMap mem_{};
     FrameCallback frame_callback_;
+    CursorCallback cursor_callback_;
 
     uint32_t display_width_;
     uint32_t display_height_;
@@ -220,4 +223,11 @@ private:
 
     std::unordered_map<uint32_t, GpuResource> resources_;
     uint32_t scanout_resource_id_ = 0;
+
+    // Cursor state
+    uint32_t cursor_resource_id_ = 0;
+    int32_t cursor_x_ = 0;
+    int32_t cursor_y_ = 0;
+    uint32_t cursor_hot_x_ = 0;
+    uint32_t cursor_hot_y_ = 0;
 };

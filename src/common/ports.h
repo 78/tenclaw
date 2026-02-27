@@ -44,10 +44,23 @@ struct DisplayFrame {
     std::vector<uint8_t> pixels;
 };
 
+struct CursorInfo {
+    int32_t x = 0;
+    int32_t y = 0;
+    uint32_t hot_x = 0;
+    uint32_t hot_y = 0;
+    uint32_t width = 0;
+    uint32_t height = 0;
+    bool visible = false;
+    bool image_updated = false;
+    std::vector<uint8_t> pixels;  // ARGB8888 format
+};
+
 class DisplayPort {
 public:
     virtual ~DisplayPort() = default;
     virtual void SubmitFrame(const DisplayFrame& frame) = 0;
+    virtual void SubmitCursor(const CursorInfo& cursor) = 0;
 };
 
 struct AudioChunk {

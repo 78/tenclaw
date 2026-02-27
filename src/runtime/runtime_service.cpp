@@ -111,15 +111,30 @@ void ManagedDisplayPort::SubmitFrame(const DisplayFrame& frame) {
     std::function<void(const DisplayFrame&)> handler;
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        handler = handler_;
+        handler = frame_handler_;
     }
     if (handler) handler(frame);
+}
+
+void ManagedDisplayPort::SubmitCursor(const CursorInfo& cursor) {
+    std::function<void(const CursorInfo&)> handler;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        handler = cursor_handler_;
+    }
+    if (handler) handler(cursor);
 }
 
 void ManagedDisplayPort::SetFrameHandler(
     std::function<void(const DisplayFrame&)> handler) {
     std::lock_guard<std::mutex> lock(mutex_);
-    handler_ = std::move(handler);
+    frame_handler_ = std::move(handler);
+}
+
+void ManagedDisplayPort::SetCursorHandler(
+    std::function<void(const CursorInfo&)> handler) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    cursor_handler_ = std::move(handler);
 }
 
 std::string EncodeHex(const uint8_t* data, size_t size) {
@@ -197,6 +212,33 @@ RuntimeControlService::RuntimeControlService(std::string vm_id, std::string pipe
             if (frame_queue_.size() > kMaxPendingFrames) {
                 frame_queue_.pop_front();
             }
+        }
+        send_cv_.notify_one();
+    });
+
+    display_port_->SetCursorHandler([this](const CursorInfo& cursor) {
+        ipc::Message event;
+        event.kind = ipc::Kind::kEvent;
+        event.channel = ipc::Channel::kDisplay;
+        event.type = "display.cursor";
+        event.vm_id = vm_id_;
+        event.request_id = next_event_id_++;
+        event.fields["x"] = std::to_string(cursor.x);
+        event.fields["y"] = std::to_string(cursor.y);
+        event.fields["hot_x"] = std::to_string(cursor.hot_x);
+        event.fields["hot_y"] = std::to_string(cursor.hot_y);
+        event.fields["width"] = std::to_string(cursor.width);
+        event.fields["height"] = std::to_string(cursor.height);
+        event.fields["visible"] = cursor.visible ? "1" : "0";
+        event.fields["image_updated"] = cursor.image_updated ? "1" : "0";
+        if (cursor.image_updated && !cursor.pixels.empty()) {
+            event.payload = cursor.pixels;
+        }
+
+        std::string encoded = ipc::Encode(event);
+        {
+            std::lock_guard<std::mutex> lock(send_queue_mutex_);
+            console_queue_.push_back(std::move(encoded));
         }
         send_cv_.notify_one();
     });

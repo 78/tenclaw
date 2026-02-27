@@ -496,6 +496,11 @@ void ManagerService::SetDisplayCallback(DisplayCallback cb) {
     display_callback_ = std::move(cb);
 }
 
+void ManagerService::SetCursorCallback(CursorCallback cb) {
+    std::lock_guard<std::mutex> lock(vms_mutex_);
+    cursor_callback_ = std::move(cb);
+}
+
 bool ManagerService::SendKeyEvent(const std::string& vm_id, uint32_t key_code, bool pressed) {
     HANDLE pipe = INVALID_HANDLE_VALUE;
     {
@@ -748,6 +753,39 @@ void ManagerService::HandleIncomingMessage(const std::string& vm_id, const ipc::
             cb = display_callback_;
         }
         if (cb) cb(vm_id, frame);
+        return;
+    }
+
+    if (msg.channel == ipc::Channel::kDisplay &&
+        msg.kind == ipc::Kind::kEvent &&
+        msg.type == "display.cursor") {
+        CursorInfo cursor;
+        auto get = [&](const char* key) -> uint32_t {
+            auto it = msg.fields.find(key);
+            return (it != msg.fields.end()) ? static_cast<uint32_t>(std::strtoul(it->second.c_str(), nullptr, 10)) : 0;
+        };
+        auto get_signed = [&](const char* key) -> int32_t {
+            auto it = msg.fields.find(key);
+            return (it != msg.fields.end()) ? static_cast<int32_t>(std::strtol(it->second.c_str(), nullptr, 10)) : 0;
+        };
+        cursor.x = get_signed("x");
+        cursor.y = get_signed("y");
+        cursor.hot_x = get("hot_x");
+        cursor.hot_y = get("hot_y");
+        cursor.width = get("width");
+        cursor.height = get("height");
+        cursor.visible = (get("visible") != 0);
+        cursor.image_updated = (get("image_updated") != 0);
+        if (cursor.image_updated) {
+            cursor.pixels = msg.payload;
+        }
+
+        CursorCallback cb;
+        {
+            std::lock_guard<std::mutex> lock(vms_mutex_);
+            cb = cursor_callback_;
+        }
+        if (cb) cb(vm_id, cursor);
         return;
     }
 

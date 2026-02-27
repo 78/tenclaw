@@ -31,6 +31,10 @@ public:
     // Thread-safe; triggers InvalidateRect.
     void UpdateFrame(const DisplayFrame& frame);
 
+    // Update the cursor image and/or position.
+    // Thread-safe; triggers InvalidateRect.
+    void UpdateCursor(const CursorInfo& cursor);
+
     // Move/resize the window.
     void SetBounds(int x, int y, int w, int h);
 
@@ -68,6 +72,10 @@ private:
     uint32_t fb_width_ = 0;
     uint32_t fb_height_ = 0;
     std::vector<uint8_t> framebuffer_;
+
+    // Cursor state
+    std::mutex cursor_mutex_;
+    HCURSOR custom_cursor_ = nullptr;
 
     KeyEventCallback key_cb_;
     PointerEventCallback pointer_cb_;

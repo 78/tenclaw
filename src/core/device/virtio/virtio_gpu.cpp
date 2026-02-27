@@ -197,9 +197,6 @@ void VirtioGpuDevice::ProcessCursorQueue(VirtQueue& vq) {
             continue;
         }
 
-        // Cursor commands typically don't have response buffers, but we need
-        // to consume the request to unblock the guest. Parse the command type
-        // for potential future cursor rendering support.
         std::vector<uint8_t> req_buf;
         for (auto& elem : chain) {
             if (!elem.writable) {
@@ -207,13 +204,45 @@ void VirtioGpuDevice::ProcessCursorQueue(VirtQueue& vq) {
             }
         }
 
-        if (req_buf.size() >= sizeof(VirtioGpuCtrlHdr)) {
-            auto* hdr = reinterpret_cast<const VirtioGpuCtrlHdr*>(req_buf.data());
-            (void)hdr; // Cursor commands (UPDATE_CURSOR, MOVE_CURSOR) are acknowledged
-                       // by simply consuming them. Hardware cursor rendering is optional.
+        if (req_buf.size() >= sizeof(VirtioGpuUpdateCursor)) {
+            auto* cmd = reinterpret_cast<const VirtioGpuUpdateCursor*>(req_buf.data());
+            bool is_update = (cmd->hdr.type == VIRTIO_GPU_CMD_UPDATE_CURSOR);
+            bool is_move = (cmd->hdr.type == VIRTIO_GPU_CMD_MOVE_CURSOR);
+
+            if (is_update || is_move) {
+                cursor_x_ = static_cast<int32_t>(cmd->pos.x);
+                cursor_y_ = static_cast<int32_t>(cmd->pos.y);
+
+                if (is_update) {
+                    cursor_resource_id_ = cmd->resource_id;
+                    cursor_hot_x_ = cmd->hot_x;
+                    cursor_hot_y_ = cmd->hot_y;
+                }
+
+                if (cursor_callback_) {
+                    CursorInfo info;
+                    info.x = cursor_x_;
+                    info.y = cursor_y_;
+                    info.hot_x = cursor_hot_x_;
+                    info.hot_y = cursor_hot_y_;
+                    info.visible = (cursor_resource_id_ != 0);
+                    info.image_updated = is_update;
+
+                    if (is_update && cursor_resource_id_ != 0) {
+                        auto it = resources_.find(cursor_resource_id_);
+                        if (it != resources_.end()) {
+                            auto& res = it->second;
+                            info.width = res.width;
+                            info.height = res.height;
+                            info.pixels = res.host_pixels;
+                        }
+                    }
+
+                    cursor_callback_(info);
+                }
+            }
         }
 
-        // Mark the buffer as used (no response data for cursor commands)
         vq.PushUsed(head, 0);
     }
 

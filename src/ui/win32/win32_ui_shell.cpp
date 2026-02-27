@@ -918,6 +918,17 @@ Win32UiShell::Win32UiShell(ManagerService& manager)
                 }
             });
         });
+    manager_.SetCursorCallback(
+        [this](const std::string& vm_id, const CursorInfo& cursor) {
+            InvokeOnUiThread([this, vm_id, cursor]() {
+                if (impl_->selected_index < 0 ||
+                    impl_->selected_index >= static_cast<int>(impl_->records.size()))
+                    return;
+                if (impl_->records[impl_->selected_index].spec.vm_id != vm_id)
+                    return;
+                impl_->display_panel->UpdateCursor(cursor);
+            });
+        });
 
     manager_.SetConsoleCallback([this](const std::string& vm_id,
                                        const std::string& data) {
