@@ -156,6 +156,7 @@ class VirtioGpuDevice : public VirtioDeviceOps {
 public:
     using FrameCallback = std::function<void(const DisplayFrame&)>;
     using CursorCallback = std::function<void(const CursorInfo&)>;
+    using ScanoutStateCallback = std::function<void(bool active, uint32_t width, uint32_t height)>;
 
     VirtioGpuDevice(uint32_t width, uint32_t height);
     ~VirtioGpuDevice() override = default;
@@ -164,6 +165,7 @@ public:
     void SetMemMap(const GuestMemMap& mem) { mem_ = mem; }
     void SetFrameCallback(FrameCallback cb) { frame_callback_ = std::move(cb); }
     void SetCursorCallback(CursorCallback cb) { cursor_callback_ = std::move(cb); }
+    void SetScanoutStateCallback(ScanoutStateCallback cb) { scanout_state_callback_ = std::move(cb); }
 
     uint32_t GetDeviceId() const override { return 16; }
     uint64_t GetDeviceFeatures() const override;
@@ -216,6 +218,7 @@ private:
     GuestMemMap mem_{};
     FrameCallback frame_callback_;
     CursorCallback cursor_callback_;
+    ScanoutStateCallback scanout_state_callback_;
 
     uint32_t display_width_;
     uint32_t display_height_;

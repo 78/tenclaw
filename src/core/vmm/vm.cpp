@@ -282,6 +282,9 @@ bool Vm::SetupVirtioGpu(uint32_t width, uint32_t height) {
         virtio_gpu_->SetCursorCallback([this](const CursorInfo& cursor) {
             display_port_->SubmitCursor(cursor);
         });
+        virtio_gpu_->SetScanoutStateCallback([this](bool active, uint32_t width, uint32_t height) {
+            display_port_->SubmitScanoutState(active, width, height);
+        });
     }
 
     virtio_mmio_gpu_ = std::make_unique<VirtioMmioDevice>();

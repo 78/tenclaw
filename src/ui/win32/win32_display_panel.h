@@ -31,9 +31,18 @@ public:
     // Thread-safe; triggers InvalidateRect.
     void UpdateFrame(const DisplayFrame& frame);
 
+    // Restore framebuffer from cached state (e.g. when switching back to a VM).
+    void RestoreFramebuffer(uint32_t w, uint32_t h, const std::vector<uint8_t>& pixels);
+
+    // Clear the framebuffer and cursor (e.g. when switching to a VM with no display).
+    void Clear();
+
     // Update the cursor image and/or position.
     // Thread-safe; triggers InvalidateRect.
     void UpdateCursor(const CursorInfo& cursor);
+
+    // Restore cursor from cached state (e.g. when switching back to a VM).
+    void RestoreCursor(const CursorInfo& cursor, const std::vector<uint8_t>& pixels);
 
     // Move/resize the window.
     void SetBounds(int x, int y, int w, int h);

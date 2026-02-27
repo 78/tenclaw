@@ -137,6 +137,20 @@ void ManagedDisplayPort::SetCursorHandler(
     cursor_handler_ = std::move(handler);
 }
 
+void ManagedDisplayPort::SubmitScanoutState(bool active, uint32_t width, uint32_t height) {
+    std::function<void(bool, uint32_t, uint32_t)> handler;
+    {
+        std::lock_guard<std::mutex> lock(mutex_);
+        handler = state_handler_;
+    }
+    if (handler) handler(active, width, height);
+}
+
+void ManagedDisplayPort::SetStateHandler(std::function<void(bool, uint32_t, uint32_t)> handler) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    state_handler_ = std::move(handler);
+}
+
 std::string EncodeHex(const uint8_t* data, size_t size) {
     static constexpr char kDigits[] = "0123456789abcdef";
     std::string out;
@@ -234,6 +248,25 @@ RuntimeControlService::RuntimeControlService(std::string vm_id, std::string pipe
         if (cursor.image_updated && !cursor.pixels.empty()) {
             event.payload = cursor.pixels;
         }
+
+        std::string encoded = ipc::Encode(event);
+        {
+            std::lock_guard<std::mutex> lock(send_queue_mutex_);
+            console_queue_.push_back(std::move(encoded));
+        }
+        send_cv_.notify_one();
+    });
+
+    display_port_->SetStateHandler([this](bool active, uint32_t width, uint32_t height) {
+        ipc::Message event;
+        event.kind = ipc::Kind::kEvent;
+        event.channel = ipc::Channel::kDisplay;
+        event.type = "display.state";
+        event.vm_id = vm_id_;
+        event.request_id = next_event_id_++;
+        event.fields["active"] = active ? "1" : "0";
+        event.fields["width"] = std::to_string(width);
+        event.fields["height"] = std::to_string(height);
 
         std::string encoded = ipc::Encode(event);
         {

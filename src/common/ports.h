@@ -61,6 +61,7 @@ public:
     virtual ~DisplayPort() = default;
     virtual void SubmitFrame(const DisplayFrame& frame) = 0;
     virtual void SubmitCursor(const CursorInfo& cursor) = 0;
+    virtual void SubmitScanoutState(bool active, uint32_t width, uint32_t height) = 0;
 };
 
 struct AudioChunk {

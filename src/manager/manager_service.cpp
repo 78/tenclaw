@@ -501,6 +501,11 @@ void ManagerService::SetCursorCallback(CursorCallback cb) {
     cursor_callback_ = std::move(cb);
 }
 
+void ManagerService::SetDisplayStateCallback(DisplayStateCallback cb) {
+    std::lock_guard<std::mutex> lock(vms_mutex_);
+    display_state_callback_ = std::move(cb);
+}
+
 bool ManagerService::SendKeyEvent(const std::string& vm_id, uint32_t key_code, bool pressed) {
     HANDLE pipe = INVALID_HANDLE_VALUE;
     {
@@ -809,6 +814,27 @@ void ManagerService::HandleIncomingMessage(const std::string& vm_id, const ipc::
             cb = cursor_callback_;
         }
         if (cb) cb(vm_id, cursor);
+        return;
+    }
+
+    if (msg.channel == ipc::Channel::kDisplay &&
+        msg.kind == ipc::Kind::kEvent &&
+        msg.type == "display.state") {
+        auto get = [&](const char* key) -> uint32_t {
+            auto it = msg.fields.find(key);
+            return (it != msg.fields.end()) ? static_cast<uint32_t>(std::strtoul(it->second.c_str(), nullptr, 10)) : 0;
+        };
+        auto it = msg.fields.find("active");
+        bool active = (it != msg.fields.end() && it->second == "1");
+        uint32_t width = get("width");
+        uint32_t height = get("height");
+
+        DisplayStateCallback cb;
+        {
+            std::lock_guard<std::mutex> lock(vms_mutex_);
+            cb = display_state_callback_;
+        }
+        if (cb) cb(vm_id, active, width, height);
         return;
     }
 

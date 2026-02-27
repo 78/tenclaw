@@ -112,6 +112,9 @@ public:
     using CursorCallback = std::function<void(const std::string& vm_id, const CursorInfo& cursor)>;
     void SetCursorCallback(CursorCallback cb);
 
+    using DisplayStateCallback = std::function<void(const std::string& vm_id, bool active, uint32_t width, uint32_t height)>;
+    void SetDisplayStateCallback(DisplayStateCallback cb);
+
     bool SendKeyEvent(const std::string& vm_id, uint32_t key_code, bool pressed);
     bool SendPointerEvent(const std::string& vm_id, int32_t x, int32_t y, uint32_t buttons);
 
@@ -142,5 +145,6 @@ private:
     StateChangeCallback state_change_callback_;
     DisplayCallback display_callback_;
     CursorCallback cursor_callback_;
+    DisplayStateCallback display_state_callback_;
     void* job_object_ = nullptr;
 };

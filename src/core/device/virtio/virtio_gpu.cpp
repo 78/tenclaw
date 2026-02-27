@@ -323,17 +323,28 @@ void VirtioGpuDevice::CmdSetScanout(const uint8_t* req, uint32_t req_len,
         WriteResponse(resp, VIRTIO_GPU_RESP_ERR_INVALID_PARAMETER, resp_len);
         return;
     }
+
+    uint32_t old_resource_id = scanout_resource_id_;
+
     if (cmd->resource_id == 0) {
         scanout_resource_id_ = 0;
         WriteResponse(resp, VIRTIO_GPU_RESP_OK_NODATA, resp_len);
+        if (old_resource_id != 0 && scanout_state_callback_) {
+            scanout_state_callback_(false, 0, 0);
+        }
         return;
     }
-    if (resources_.find(cmd->resource_id) == resources_.end()) {
+    auto it = resources_.find(cmd->resource_id);
+    if (it == resources_.end()) {
         WriteResponse(resp, VIRTIO_GPU_RESP_ERR_INVALID_RESOURCE_ID, resp_len);
         return;
     }
     scanout_resource_id_ = cmd->resource_id;
     WriteResponse(resp, VIRTIO_GPU_RESP_OK_NODATA, resp_len);
+
+    if (old_resource_id == 0 && scanout_state_callback_) {
+        scanout_state_callback_(true, it->second.width, it->second.height);
+    }
 }
 
 void VirtioGpuDevice::CmdTransferToHost2d(const uint8_t* req, uint32_t req_len,

@@ -15,11 +15,15 @@
     "processorArchitecture='*' publicKeyToken='6595b64144ccf1df' " \
     "language='*'\"")
 
+#include "common/ports.h"
+
 #include <algorithm>
+#include <cstring>
 #include <deque>
 #include <filesystem>
 #include <mutex>
 #include <string>
+#include <unordered_map>
 #include <vector>
 
 // ── Menu / toolbar command IDs ──
@@ -83,6 +87,24 @@ static const char* StateText(VmPowerState s) {
     }
 }
 
+// ── Per-VM UI state cache ──
+
+enum class AnsiState { kNormal, kEsc, kCsi };
+
+struct VmUiState {
+    int current_tab = 0;  // kTabInfo / kTabConsole / kTabDisplay (set after constants)
+
+    std::string console_text;
+    AnsiState ansi_state = AnsiState::kNormal;
+
+    uint32_t fb_width = 0;
+    uint32_t fb_height = 0;
+    std::vector<uint8_t> framebuffer;
+
+    CursorInfo cursor;
+    std::vector<uint8_t> cursor_pixels;
+};
+
 // ── PIMPL ──
 
 struct Win32UiShell::Impl {
@@ -109,40 +131,75 @@ struct Win32UiShell::Impl {
 
     std::vector<VmRecord> records;
     int selected_index = -1;
-    std::string console_text;
 
-    enum AnsiState { kNormal, kEsc, kCsi };
-    AnsiState ansi_state = kNormal;
+    std::unordered_map<std::string, VmUiState> vm_ui_states;
 
-    void ResetConsole() {
-        console_text.clear();
-        ansi_state = kNormal;
+    VmUiState& GetVmUiState(const std::string& vm_id) {
+        return vm_ui_states[vm_id];
     }
 
-    std::string AppendConsoleData(const std::string& raw) {
+    void ResetConsoleForVm(const std::string& vm_id) {
+        auto it = vm_ui_states.find(vm_id);
+        if (it != vm_ui_states.end()) {
+            it->second.console_text.clear();
+            it->second.ansi_state = AnsiState::kNormal;
+        }
+    }
+
+    std::string AppendConsoleDataToState(VmUiState& state, const std::string& raw) {
         std::string added;
         for (unsigned char ch : raw) {
-            switch (ansi_state) {
-            case kNormal:
-                if (ch == 0x1b) { ansi_state = kEsc; break; }
-                if (ch == '\n') { console_text += "\r\n"; added += "\r\n"; break; }
-                if (ch == '\t') { console_text.push_back('\t'); added.push_back('\t'); break; }
-                if (ch >= 0x20 && ch <= 0x7e) { console_text.push_back(ch); added.push_back(ch); break; }
+            switch (state.ansi_state) {
+            case AnsiState::kNormal:
+                if (ch == 0x1b) { state.ansi_state = AnsiState::kEsc; break; }
+                if (ch == '\n') { state.console_text += "\r\n"; added += "\r\n"; break; }
+                if (ch == '\t') { state.console_text.push_back('\t'); added.push_back('\t'); break; }
+                if (ch >= 0x20 && ch <= 0x7e) { state.console_text.push_back(ch); added.push_back(ch); break; }
                 break;
-            case kEsc:
-                ansi_state = (ch == '[') ? kCsi : kNormal;
+            case AnsiState::kEsc:
+                state.ansi_state = (ch == '[') ? AnsiState::kCsi : AnsiState::kNormal;
                 break;
-            case kCsi:
-                if (ch >= 0x40 && ch <= 0x7e) ansi_state = kNormal;
+            case AnsiState::kCsi:
+                if (ch >= 0x40 && ch <= 0x7e) state.ansi_state = AnsiState::kNormal;
                 break;
             }
         }
-        if (console_text.size() > kMaxConsoleLen) {
-            console_text.erase(0, console_text.size() - kMaxConsoleLen);
+        if (state.console_text.size() > kMaxConsoleLen) {
+            state.console_text.erase(0, state.console_text.size() - kMaxConsoleLen);
         }
         return added;
     }
 };
+
+// Blit incoming DisplayFrame into VmUiState framebuffer (for caching).
+static void BlitFrameToState(VmUiState& state, const DisplayFrame& frame) {
+    uint32_t rw = frame.resource_width;
+    uint32_t rh = frame.resource_height;
+    if (rw == 0) rw = frame.width;
+    if (rh == 0) rh = frame.height;
+
+    if (state.fb_width != rw || state.fb_height != rh) {
+        state.fb_width = rw;
+        state.fb_height = rh;
+        state.framebuffer.resize(static_cast<size_t>(rw) * rh * 4, 0);
+    }
+
+    uint32_t dx = frame.dirty_x;
+    uint32_t dy = frame.dirty_y;
+    uint32_t dw = frame.width;
+    uint32_t dh = frame.height;
+    uint32_t src_stride = dw * 4;
+    uint32_t dst_stride = state.fb_width * 4;
+
+    for (uint32_t row = 0; row < dh; ++row) {
+        uint32_t src_off = row * src_stride;
+        uint32_t dst_off = (dy + row) * dst_stride + dx * 4;
+        if (src_off + src_stride > frame.pixels.size()) break;
+        if (dst_off + dw * 4 > state.framebuffer.size()) break;
+        std::memcpy(state.framebuffer.data() + dst_off,
+                    frame.pixels.data() + src_off, dw * 4);
+    }
+}
 
 // ── Window class registration ──
 
@@ -456,20 +513,40 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             // handled below via accelerator
         }
 
-        // ListBox selection change
+        // ListBox selection change: save current VM state, restore selected VM state
         if (cmd == IDC_LISTVIEW && code == LBN_SELCHANGE) {
             int sel = static_cast<int>(SendMessageA(p->listview, LB_GETCURSEL, 0, 0));
             if (sel != LB_ERR && sel != p->selected_index) {
+                // Save current tab for the VM we are leaving
+                if (p->selected_index >= 0 &&
+                    p->selected_index < static_cast<int>(p->records.size())) {
+                    int cur_tab = static_cast<int>(SendMessage(p->tab, TCM_GETCURSEL, 0, 0));
+                    const std::string& old_vm_id = p->records[p->selected_index].spec.vm_id;
+                    p->GetVmUiState(old_vm_id).current_tab = cur_tab;
+                }
+
                 p->selected_index = sel;
-                p->ResetConsole();
-                SetWindowTextA(p->console, "");
-                p->display_available = false;
+                const std::string& new_vm_id = p->records[sel].spec.vm_id;
+                VmUiState& new_state = p->GetVmUiState(new_vm_id);
+
                 UpdateDetailPanel(p);
                 UpdateCommandStates(p);
 
-                bool running = IsVmRunning(p->records[sel].state);
-                SendMessage(p->tab, TCM_SETCURSEL,
-                    running ? kTabConsole : kTabInfo, 0);
+                SendMessage(p->tab, TCM_SETCURSEL, new_state.current_tab, 0);
+
+                SetWindowTextA(p->console, new_state.console_text.c_str());
+
+                p->display_available = (new_state.fb_width > 0 && new_state.fb_height > 0);
+                if (p->display_available && !new_state.framebuffer.empty()) {
+                    p->display_panel->RestoreFramebuffer(
+                        new_state.fb_width, new_state.fb_height, new_state.framebuffer);
+                    if (!new_state.cursor_pixels.empty()) {
+                        p->display_panel->RestoreCursor(new_state.cursor, new_state.cursor_pixels);
+                    }
+                } else {
+                    p->display_panel->Clear();
+                }
+
                 LayoutControls(p);
             }
             return 0;
@@ -508,7 +585,9 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 p->selected_index >= static_cast<int>(p->records.size()))
                 break;
             std::string vm_id = p->records[p->selected_index].spec.vm_id;
-            p->ResetConsole();
+            p->ResetConsoleForVm(vm_id);
+            VmUiState& state = p->GetVmUiState(vm_id);
+            state.current_tab = kTabConsole;
             SetWindowTextA(p->console, "");
             p->display_available = false;
             SendMessage(p->tab, TCM_SETCURSEL, kTabConsole, 0);
@@ -590,6 +669,7 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                     MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) == IDYES) {
                 std::string error;
                 if (shell->manager_.DeleteVm(vm_id, &error)) {
+                    p->vm_ui_states.erase(vm_id);
                     shell->RefreshVmList();
                     SendMessageA(p->statusbar, SB_SETTEXTA, 0,
                         reinterpret_cast<LPARAM>("VM deleted"));
@@ -606,6 +686,11 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
     case WM_NOTIFY: {
         auto* nmhdr = reinterpret_cast<NMHDR*>(lp);
         if (nmhdr->idFrom == IDC_TAB && nmhdr->code == TCN_SELCHANGE) {
+            int cur_tab = static_cast<int>(SendMessage(p->tab, TCM_GETCURSEL, 0, 0));
+            if (p->selected_index >= 0 &&
+                p->selected_index < static_cast<int>(p->records.size())) {
+                p->GetVmUiState(p->records[p->selected_index].spec.vm_id).current_tab = cur_tab;
+            }
             LayoutControls(p);
         }
         break;
@@ -901,47 +986,71 @@ Win32UiShell::Win32UiShell(ManagerService& manager)
             manager_.SendPointerEvent(vm_id, x, y, buttons);
         });
 
-    // Wire callbacks
+    // Wire callbacks: always cache to VM state; update UI only for current VM
     manager_.SetDisplayCallback(
         [this](const std::string& vm_id, const DisplayFrame& frame) {
             InvokeOnUiThread([this, vm_id, frame]() {
-                if (impl_->selected_index < 0 ||
-                    impl_->selected_index >= static_cast<int>(impl_->records.size()))
-                    return;
-                if (impl_->records[impl_->selected_index].spec.vm_id != vm_id)
-                    return;
-                impl_->display_panel->UpdateFrame(frame);
-                if (!impl_->display_available) {
-                    impl_->display_available = true;
-                    SendMessage(impl_->tab, TCM_SETCURSEL, kTabDisplay, 0);
-                    LayoutControls(impl_.get());
+                VmUiState& state = impl_->GetVmUiState(vm_id);
+                BlitFrameToState(state, frame);
+
+                bool is_current = (impl_->selected_index >= 0 &&
+                    impl_->selected_index < static_cast<int>(impl_->records.size()) &&
+                    impl_->records[impl_->selected_index].spec.vm_id == vm_id);
+                if (is_current) {
+                    impl_->display_panel->UpdateFrame(frame);
                 }
             });
         });
     manager_.SetCursorCallback(
         [this](const std::string& vm_id, const CursorInfo& cursor) {
             InvokeOnUiThread([this, vm_id, cursor]() {
-                if (impl_->selected_index < 0 ||
-                    impl_->selected_index >= static_cast<int>(impl_->records.size()))
-                    return;
-                if (impl_->records[impl_->selected_index].spec.vm_id != vm_id)
-                    return;
-                impl_->display_panel->UpdateCursor(cursor);
+                VmUiState& state = impl_->GetVmUiState(vm_id);
+                state.cursor = cursor;
+                if (cursor.image_updated && !cursor.pixels.empty()) {
+                    state.cursor_pixels = cursor.pixels;
+                }
+
+                bool is_current = (impl_->selected_index >= 0 &&
+                    impl_->selected_index < static_cast<int>(impl_->records.size()) &&
+                    impl_->records[impl_->selected_index].spec.vm_id == vm_id);
+                if (is_current) {
+                    impl_->display_panel->UpdateCursor(cursor);
+                }
+            });
+        });
+
+    manager_.SetDisplayStateCallback(
+        [this](const std::string& vm_id, bool active, uint32_t /*width*/, uint32_t /*height*/) {
+            InvokeOnUiThread([this, vm_id, active]() {
+                bool is_current = (impl_->selected_index >= 0 &&
+                    impl_->selected_index < static_cast<int>(impl_->records.size()) &&
+                    impl_->records[impl_->selected_index].spec.vm_id == vm_id);
+                if (!is_current) return;
+
+                VmUiState& state = impl_->GetVmUiState(vm_id);
+                if (active) {
+                    impl_->display_available = true;
+                    state.current_tab = kTabDisplay;
+                    SendMessage(impl_->tab, TCM_SETCURSEL, kTabDisplay, 0);
+                } else {
+                    impl_->display_available = false;
+                    state.current_tab = kTabConsole;
+                    SendMessage(impl_->tab, TCM_SETCURSEL, kTabConsole, 0);
+                }
+                LayoutControls(impl_.get());
             });
         });
 
     manager_.SetConsoleCallback([this](const std::string& vm_id,
                                        const std::string& data) {
         InvokeOnUiThread([this, vm_id, data]() {
-            if (impl_->selected_index < 0 ||
-                impl_->selected_index >= static_cast<int>(impl_->records.size()))
-                return;
-            if (impl_->records[impl_->selected_index].spec.vm_id != vm_id)
-                return;
+            VmUiState& state = impl_->GetVmUiState(vm_id);
+            std::string added = impl_->AppendConsoleDataToState(state, data);
 
-            std::string added = impl_->AppendConsoleData(data);
-            if (!added.empty()) {
-                // Trim the Edit control when it gets too large
+            bool is_current = (impl_->selected_index >= 0 &&
+                impl_->selected_index < static_cast<int>(impl_->records.size()) &&
+                impl_->records[impl_->selected_index].spec.vm_id == vm_id);
+            if (is_current && !added.empty()) {
                 int ctl_len = GetWindowTextLengthA(impl_->console);
                 if (ctl_len > static_cast<int>(kConsoleTrimAt)) {
                     int cut = ctl_len / 2;
@@ -950,7 +1059,6 @@ Win32UiShell::Win32UiShell(ManagerService& manager)
                         reinterpret_cast<LPARAM>(""));
                     ctl_len = GetWindowTextLengthA(impl_->console);
                 }
-
                 SendMessageA(impl_->console, EM_SETSEL, ctl_len, ctl_len);
                 SendMessageA(impl_->console, EM_REPLACESEL, FALSE,
                     reinterpret_cast<LPARAM>(added.c_str()));
@@ -961,15 +1069,27 @@ Win32UiShell::Win32UiShell(ManagerService& manager)
     manager_.SetStateChangeCallback([this](const std::string& vm_id) {
         InvokeOnUiThread([this, vm_id]() {
             RefreshVmList();
-            if (impl_->selected_index >= 0 &&
+
+            auto vm_opt = manager_.GetVm(vm_id);
+            bool is_stopped = !vm_opt || vm_opt->state == VmPowerState::kStopped ||
+                              vm_opt->state == VmPowerState::kCrashed;
+
+            if (is_stopped) {
+                VmUiState& ui_state = impl_->GetVmUiState(vm_id);
+                ui_state.current_tab = kTabInfo;
+                ui_state.fb_width = 0;
+                ui_state.fb_height = 0;
+                ui_state.framebuffer.clear();
+                ui_state.cursor_pixels.clear();
+            }
+
+            bool is_current = (impl_->selected_index >= 0 &&
                 impl_->selected_index < static_cast<int>(impl_->records.size()) &&
-                impl_->records[impl_->selected_index].spec.vm_id == vm_id) {
-                auto state = impl_->records[impl_->selected_index].state;
-                if (state == VmPowerState::kStopped || state == VmPowerState::kCrashed) {
-                    impl_->display_available = false;
-                    SendMessage(impl_->tab, TCM_SETCURSEL, kTabInfo, 0);
-                    LayoutControls(impl_.get());
-                }
+                impl_->records[impl_->selected_index].spec.vm_id == vm_id);
+            if (is_current && is_stopped) {
+                impl_->display_available = false;
+                SendMessage(impl_->tab, TCM_SETCURSEL, kTabInfo, 0);
+                LayoutControls(impl_.get());
             }
         });
     });
