@@ -22,28 +22,33 @@ HANDLE AsHandle(void* handle) {
 
 void ManagedConsolePort::Write(const uint8_t* data, size_t size) {
     if (!data || size == 0) return;
-    std::function<void(const uint8_t*, size_t)> handler;
-    std::string chunk;
+    std::function<void()> notify;
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        // 累积 UART 每次写入的单个字符，做简单批量。
+        bool was_empty = pending_write_.empty();
         pending_write_.append(reinterpret_cast<const char*>(data), size);
-
-        // 优先按行刷新：找到最后一个换行符之前的内容一次性输出。
-        size_t cut = pending_write_.find_last_of('\n');
-        if (cut != std::string::npos) {
-            chunk.assign(pending_write_.data(), cut + 1);
-            pending_write_.erase(0, cut + 1);
-            handler = write_handler_;
-        } else if (pending_write_.size() >= kFlushThreshold) {
-            // 没有换行但累计太多，也刷一次，避免尾部长期不输出。
-            chunk.swap(pending_write_);
-            handler = write_handler_;
+        if (was_empty && data_available_callback_) {
+            notify = data_available_callback_;
         }
     }
-    if (handler && !chunk.empty()) {
-        handler(reinterpret_cast<const uint8_t*>(chunk.data()), chunk.size());
-    }
+    if (notify) notify();
+}
+
+std::string ManagedConsolePort::FlushPending() {
+    std::lock_guard<std::mutex> lock(mutex_);
+    std::string result;
+    result.swap(pending_write_);
+    return result;
+}
+
+bool ManagedConsolePort::HasPending() const {
+    std::lock_guard<std::mutex> lock(mutex_);
+    return !pending_write_.empty();
+}
+
+void ManagedConsolePort::SetDataAvailableCallback(std::function<void()> callback) {
+    std::lock_guard<std::mutex> lock(mutex_);
+    data_available_callback_ = std::move(callback);
 }
 
 size_t ManagedConsolePort::Read(uint8_t* out, size_t size) {
@@ -69,12 +74,6 @@ void ManagedConsolePort::PushInput(const uint8_t* data, size_t size) {
         }
     }
     cv_.notify_all();
-}
-
-void ManagedConsolePort::SetWriteHandler(
-    std::function<void(const uint8_t*, size_t)> handler) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    write_handler_ = std::move(handler);
 }
 
 // ── ManagedInputPort ─────────────────────────────────────────────────
@@ -183,22 +182,7 @@ std::vector<uint8_t> DecodeHex(const std::string& value) {
 
 RuntimeControlService::RuntimeControlService(std::string vm_id, std::string pipe_name)
     : vm_id_(std::move(vm_id)), pipe_name_(std::move(pipe_name)) {
-    console_port_->SetWriteHandler([this](const uint8_t* data, size_t size) {
-        if (!data || size == 0) return;
-
-        ipc::Message event;
-        event.kind = ipc::Kind::kEvent;
-        event.channel = ipc::Channel::kConsole;
-        event.type = "console.data";
-        event.vm_id = vm_id_;
-        event.request_id = next_event_id_++;
-        event.fields["data_hex"] = EncodeHex(data, size);
-
-        std::string encoded = ipc::Encode(event);
-        {
-            std::lock_guard<std::mutex> lock(send_queue_mutex_);
-            console_queue_.push_back(std::move(encoded));
-        }
+    console_port_->SetDataAvailableCallback([this]() {
         send_cv_.notify_one();
     });
 
@@ -291,24 +275,50 @@ bool RuntimeControlService::Start() {
 
     send_thread_ = std::thread([this]() {
         HANDLE h = AsHandle(pipe_handle_);
+        constexpr auto kFlushInterval = std::chrono::milliseconds(20);
+
         while (running_) {
             std::string batch;
             {
                 std::unique_lock<std::mutex> lock(send_queue_mutex_);
-                send_cv_.wait(lock, [this]() {
-                    return !running_ || !console_queue_.empty() || !frame_queue_.empty();
-                });
+
+                // Determine wait duration based on whether console has pending data.
+                bool has_pending = console_port_->HasPending();
+                if (has_pending) {
+                    send_cv_.wait_for(lock, kFlushInterval);
+                } else {
+                    send_cv_.wait(lock, [this]() {
+                        return !running_ || !console_queue_.empty() ||
+                               !frame_queue_.empty() || console_port_->HasPending();
+                    });
+                }
+
                 if (!running_) {
                     break;
                 }
 
-                // 优先发送所有小的高优先级消息（console/control 等）。
+                // Flush any pending console output from the port.
+                std::string console_data = console_port_->FlushPending();
+                if (!console_data.empty()) {
+                    ipc::Message event;
+                    event.kind = ipc::Kind::kEvent;
+                    event.channel = ipc::Channel::kConsole;
+                    event.type = "console.data";
+                    event.vm_id = vm_id_;
+                    event.request_id = next_event_id_++;
+                    event.fields["data_hex"] = EncodeHex(
+                        reinterpret_cast<const uint8_t*>(console_data.data()),
+                        console_data.size());
+                    batch += ipc::Encode(event);
+                }
+
+                // Send all queued high-priority messages (control responses, etc.).
                 while (!console_queue_.empty()) {
                     batch += std::move(console_queue_.front());
                     console_queue_.pop_front();
                 }
 
-                // 然后发送若干帧显示数据（按顺序），数量受限以避免长时间占用管道。
+                // Send display frames (bounded to avoid blocking too long).
                 size_t frames_to_send = frame_queue_.size();
                 while (frames_to_send-- > 0 && !frame_queue_.empty()) {
                     batch += std::move(frame_queue_.front());

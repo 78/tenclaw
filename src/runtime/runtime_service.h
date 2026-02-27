@@ -24,16 +24,20 @@ public:
     size_t Read(uint8_t* out, size_t size) override;
 
     void PushInput(const uint8_t* data, size_t size);
-    void SetWriteHandler(std::function<void(const uint8_t*, size_t)> handler);
+
+    // Returns and clears any pending output data.
+    std::string FlushPending();
+    bool HasPending() const;
+
+    // Called when new output data is available.
+    void SetDataAvailableCallback(std::function<void()> callback);
 
 private:
-    static constexpr size_t kFlushThreshold = 512;
-
-    std::mutex mutex_;
+    mutable std::mutex mutex_;
     std::condition_variable cv_;
     std::deque<uint8_t> queue_;
-    std::function<void(const uint8_t*, size_t)> write_handler_;
     std::string pending_write_;
+    std::function<void()> data_available_callback_;
 };
 
 class ManagedInputPort final : public InputPort {
