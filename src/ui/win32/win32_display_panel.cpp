@@ -9,9 +9,14 @@ static bool g_class_registered = false;
 
 static constexpr int kHintBarHeight = 20;
 
+// Global pointer so the low-level keyboard hook callback can reach the active panel.
+// Only one DisplayPanel captures input at a time.
+static DisplayPanel* g_captured_panel = nullptr;
+
 DisplayPanel::DisplayPanel() = default;
 
 DisplayPanel::~DisplayPanel() {
+    SetCaptured(false);
     if (hwnd_) DestroyWindow(hwnd_);
 }
 
@@ -171,7 +176,7 @@ void DisplayPanel::OnPaint() {
     SetBkMode(hdc, TRANSPARENT);
     SetTextColor(hdc, RGB(200, 200, 200));
     const char* hint = captured_
-        ? "Press Ctrl+Alt to release | Input captured"
+        ? "Press Right Alt to release | Input captured"
         : "Click to capture keyboard & mouse";
     DrawTextA(hdc, hint, -1, &hint_rc,
         DT_CENTER | DT_VCENTER | DT_SINGLELINE);
@@ -185,25 +190,15 @@ void DisplayPanel::HandleKey(UINT msg, WPARAM wp, LPARAM lp) {
     bool pressed = (msg == WM_KEYDOWN || msg == WM_SYSKEYDOWN);
     uint32_t vk = static_cast<uint32_t>(wp);
 
-    // Detect Ctrl+Alt release combo
-    if (pressed && (vk == VK_MENU || vk == VK_LMENU || vk == VK_RMENU)) {
-        if (GetKeyState(VK_CONTROL) & 0x8000) {
-            captured_ = false;
-            InvalidateRect(hwnd_, nullptr, FALSE);
-            return;
-        }
-    }
-    if (pressed && (vk == VK_CONTROL || vk == VK_LCONTROL || vk == VK_RCONTROL)) {
-        if (GetKeyState(VK_MENU) & 0x8000) {
-            captured_ = false;
-            InvalidateRect(hwnd_, nullptr, FALSE);
-            return;
-        }
-    }
-
     // Distinguish left/right modifier keys using scan code
     UINT scancode = (lp >> 16) & 0xFF;
     bool extended = (lp >> 24) & 1;
+
+    // Use Right Alt to release capture (fallback if LL hook missed it)
+    if (pressed && (vk == VK_MENU || vk == VK_RMENU) && extended) {
+        SetCaptured(false);
+        return;
+    }
     if (vk == VK_CONTROL) vk = extended ? VK_RCONTROL : VK_LCONTROL;
     if (vk == VK_MENU)    vk = extended ? VK_RMENU : VK_LMENU;
     if (vk == VK_SHIFT) {
@@ -218,15 +213,13 @@ void DisplayPanel::HandleKey(UINT msg, WPARAM wp, LPARAM lp) {
 
 void DisplayPanel::HandleMouse(UINT msg, WPARAM wp, LPARAM lp) {
     if (!captured_ && msg == WM_LBUTTONDOWN) {
-        captured_ = true;
         SetFocus(hwnd_);
-        InvalidateRect(hwnd_, nullptr, FALSE);
+        SetCaptured(true);
         return;
     }
     if (!captured_) return;
 
-    int mx = GET_X_LPARAM(lp);
-    int my = GET_Y_LPARAM(lp);
+    uint32_t old_buttons = mouse_buttons_;
 
     switch (msg) {
     case WM_LBUTTONDOWN:   mouse_buttons_ |= 1; break;
@@ -237,6 +230,20 @@ void DisplayPanel::HandleMouse(UINT msg, WPARAM wp, LPARAM lp) {
     case WM_MBUTTONUP:     mouse_buttons_ &= ~4u; break;
     default: break;
     }
+
+    bool buttons_changed = (mouse_buttons_ != old_buttons);
+
+    // Throttle pure move events to avoid flooding the pipe.
+    // Button state changes are always sent immediately.
+    if (!buttons_changed) {
+        DWORD now = GetTickCount();
+        if (now - last_pointer_tick_ < kPointerMinIntervalMs)
+            return;
+        last_pointer_tick_ = now;
+    }
+
+    int mx = GET_X_LPARAM(lp);
+    int my = GET_Y_LPARAM(lp);
 
     RECT rc;
     GetClientRect(hwnd_, &rc);
@@ -260,6 +267,66 @@ void DisplayPanel::HandleMouse(UINT msg, WPARAM wp, LPARAM lp) {
     if (pointer_cb_) {
         pointer_cb_(abs_x, abs_y, mouse_buttons_);
     }
+}
+
+void DisplayPanel::SetCaptured(bool captured) {
+    if (captured_ == captured) return;
+    captured_ = captured;
+    if (captured) {
+        InstallKeyboardHook();
+    } else {
+        UninstallKeyboardHook();
+    }
+    if (hwnd_) InvalidateRect(hwnd_, nullptr, FALSE);
+}
+
+void DisplayPanel::InstallKeyboardHook() {
+    if (kb_hook_) return;
+    g_captured_panel = this;
+    kb_hook_ = SetWindowsHookExW(
+        WH_KEYBOARD_LL, LowLevelKeyboardProc,
+        GetModuleHandleW(nullptr), 0);
+}
+
+void DisplayPanel::UninstallKeyboardHook() {
+    if (kb_hook_) {
+        UnhookWindowsHookEx(kb_hook_);
+        kb_hook_ = nullptr;
+    }
+    if (g_captured_panel == this) {
+        g_captured_panel = nullptr;
+    }
+}
+
+LRESULT CALLBACK DisplayPanel::LowLevelKeyboardProc(int nCode, WPARAM wp, LPARAM lp) {
+    if (nCode == HC_ACTION && g_captured_panel && g_captured_panel->captured_) {
+        auto* kb = reinterpret_cast<KBDLLHOOKSTRUCT*>(lp);
+        uint32_t vk = kb->vkCode;
+        bool pressed = (wp == WM_KEYDOWN || wp == WM_SYSKEYDOWN);
+        bool extended = (kb->flags & LLKHF_EXTENDED) != 0;
+
+        // Right Alt releases capture
+        if (pressed && (vk == VK_MENU || vk == VK_RMENU) && extended) {
+            g_captured_panel->SetCaptured(false);
+            return 1;
+        }
+
+        // Distinguish left/right modifiers
+        if (vk == VK_CONTROL) vk = extended ? VK_RCONTROL : VK_LCONTROL;
+        if (vk == VK_MENU)    vk = extended ? VK_RMENU : VK_LMENU;
+        if (vk == VK_SHIFT) {
+            vk = (kb->scanCode == 0x36) ? VK_RSHIFT : VK_LSHIFT;
+        }
+
+        uint32_t evdev = VkToEvdev(vk);
+        if (evdev && g_captured_panel->key_cb_) {
+            g_captured_panel->key_cb_(evdev, pressed);
+        }
+
+        // Swallow the key so the host OS does not act on it
+        return 1;
+    }
+    return CallNextHookEx(nullptr, nCode, wp, lp);
 }
 
 LRESULT CALLBACK DisplayPanel::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
@@ -299,9 +366,8 @@ LRESULT CALLBACK DisplayPanel::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp
         return 0;
 
     case WM_KILLFOCUS:
-        self->captured_ = false;
+        self->SetCaptured(false);
         self->mouse_buttons_ = 0;
-        InvalidateRect(hwnd, nullptr, FALSE);
         return 0;
 
     case WM_ERASEBKGND:

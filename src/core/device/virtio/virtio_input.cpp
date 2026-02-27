@@ -54,34 +54,41 @@ void VirtioInputDevice::UpdateConfigData() {
         break;
     }
     case VIRTIO_INPUT_CFG_PROP_BITS:
-        config_.size = 0;
+        if (sub_type_ == SubType::kTablet) {
+            SetBit(config_.data, INPUT_PROP_DIRECT);
+            config_.size = 1;
+        } else {
+            config_.size = 0;
+        }
         break;
     case VIRTIO_INPUT_CFG_EV_BITS: {
         if (sub_type_ == SubType::kKeyboard) {
             if (config_.subsel == EV_KEY) {
-                // Report keys KEY_ESC(1) through KEY_COMPOSE(127)
-                for (uint16_t k = 1; k <= 127; ++k) SetBit(config_.data, k);
-                // Also report KEY_UP(103)..KEY_RIGHT(106) range (already in 1..127)
-                config_.size = 16; // 128 bits = 16 bytes
+                // KEY_ESC(1) .. KEY_MAX(0x2ff): report standard 1..127 plus
+                // extended keys up to 248 so udev input_id sees a real keyboard
+                for (uint16_t k = 1; k <= 248; ++k) SetBit(config_.data, k);
+                config_.size = static_cast<uint8_t>((248 / 8) + 1); // 32 bytes
             } else if (config_.subsel == EV_SYN) {
                 SetBit(config_.data, SYN_REPORT);
+                config_.size = 1;
+            } else if (config_.subsel == EV_REP) {
+                // udev input_id uses EV_REP to confirm this is a keyboard
+                SetBit(config_.data, 0);
+                SetBit(config_.data, 1);
+                config_.size = 1;
+            } else if (config_.subsel == EV_MSC) {
+                SetBit(config_.data, MSC_SCAN);
                 config_.size = 1;
             } else {
                 config_.size = 0;
             }
         } else {
-            // Tablet
+            // Tablet (absolute pointer)
             if (config_.subsel == EV_ABS) {
                 SetBit(config_.data, ABS_X);
                 SetBit(config_.data, ABS_Y);
                 config_.size = 1;
             } else if (config_.subsel == EV_KEY) {
-                SetBit(config_.data, BTN_LEFT & 0xFF);
-                SetBit(config_.data, BTN_RIGHT & 0xFF);
-                SetBit(config_.data, BTN_MIDDLE & 0xFF);
-                // BTN_LEFT=0x110, need at least ceil(0x113/8)=35 bytes
-                // Re-do with full codes:
-                std::memset(config_.data, 0, sizeof(config_.data));
                 SetBit(config_.data, BTN_LEFT);
                 SetBit(config_.data, BTN_RIGHT);
                 SetBit(config_.data, BTN_MIDDLE);

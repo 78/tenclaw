@@ -12,8 +12,11 @@ constexpr uint16_t EV_SYN = 0x00;
 constexpr uint16_t EV_KEY = 0x01;
 constexpr uint16_t EV_REL = 0x02;
 constexpr uint16_t EV_ABS = 0x03;
+constexpr uint16_t EV_MSC = 0x04;
+constexpr uint16_t EV_REP = 0x14;
 
 constexpr uint16_t SYN_REPORT = 0x00;
+constexpr uint16_t MSC_SCAN   = 0x04;
 
 // Absolute axis codes
 constexpr uint16_t ABS_X = 0x00;
@@ -24,6 +27,10 @@ constexpr uint16_t BTN_LEFT   = 0x110;
 constexpr uint16_t BTN_RIGHT  = 0x111;
 constexpr uint16_t BTN_MIDDLE = 0x112;
 constexpr uint16_t BTN_TOUCH  = 0x14a;
+
+// Input properties (linux/input.h)
+constexpr uint16_t INPUT_PROP_POINTER  = 0x00;
+constexpr uint16_t INPUT_PROP_DIRECT   = 0x01;
 
 // Config select values (virtio spec 5.8.2)
 constexpr uint8_t VIRTIO_INPUT_CFG_UNSET    = 0x00;

@@ -52,6 +52,7 @@ VIRTIO_MODS=(
     "drivers/net/net_failover.ko"
     "drivers/net/virtio_net.ko"
     "drivers/virtio/virtio_input.ko"
+    "drivers/input/evdev.ko"
     "drivers/media/cec/cec.ko"
     "drivers/gpu/drm/drm.ko"
     "drivers/gpu/drm/drm_kms_helper.ko"
@@ -111,7 +112,7 @@ cat > "$WORKDIR/initramfs/init" << 'EOF'
 
 # Load virtio modules — device discovery is handled by ACPI DSDT
 MODDIR=/lib/modules
-for mod in virtio virtio_ring virtio_mmio virtio_blk failover net_failover virtio_net virtio_input; do
+for mod in virtio virtio_ring virtio_mmio virtio_blk failover net_failover virtio_net virtio_input evdev; do
     if [ -f "$MODDIR/$mod.ko" ]; then
         insmod "$MODDIR/$mod.ko" 2>/dev/null && \
             echo "Loaded: $mod" || echo "Failed: $mod"

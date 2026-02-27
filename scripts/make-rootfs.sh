@@ -3,7 +3,7 @@
 # Requires: debootstrap, qemu-utils. Run as root in WSL2 or Linux.
 set -e
 
-ROOTFS_SIZE="10G"
+ROOTFS_SIZE="20G"
 SUITE="bookworm"
 MIRROR="https://mirrors.tuna.tsinghua.edu.cn/debian"
 INCLUDE_PKGS="systemd-sysv,udev,dbus,\
@@ -20,7 +20,7 @@ coreutils,findutils,grep,gawk,sed,tar,gzip,bzip2,xz-utils"
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BUILD_DIR="$SCRIPT_DIR/../build"
 mkdir -p "$BUILD_DIR"
-OUTPUT="$(realpath -m "${1:-$BUILD_DIR/rootfs.qcow2}")"
+OUTPUT="$(realpath -m "${1:-$BUILD_DIR/share/rootfs.qcow2}")"
 CACHE_TAR="$BUILD_DIR/.debootstrap-${SUITE}-base.tar"
 
 # DrvFS (/mnt/*) does not support mknod through loop devices.
@@ -91,6 +91,22 @@ APT
 
 apt-get update
 update-ca-certificates --fresh 2>/dev/null || true
+
+# XFCE desktop + LightDM + X11
+DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+    xfce4 xfce4-terminal \
+    lightdm \
+    xserver-xorg-core xserver-xorg-input-libinput \
+    xfonts-base fonts-dejavu-core fonts-noto-cjk fonts-noto-color-emoji \
+    locales \
+    dbus-x11 at-spi2-core
+
+# Chinese locale
+sed -i 's/^# *zh_CN.UTF-8/zh_CN.UTF-8/' /etc/locale.gen
+sed -i 's/^# *en_US.UTF-8/en_US.UTF-8/' /etc/locale.gen
+locale-gen
+update-locale LANG=zh_CN.UTF-8
+
 apt-get clean
 rm -rf /var/lib/apt/lists/*
 
@@ -123,6 +139,24 @@ resize() {
 case "$(tty 2>/dev/null)" in /dev/ttyS*) resize ;; esac
 RESIZE
 
+mkdir -p /etc/udev/rules.d
+cat > /etc/udev/rules.d/99-virtio-input.rules << 'UDEV'
+SUBSYSTEM=="input", ATTR{name}=="virtio-keyboard", ENV{ID_INPUT}="1", ENV{ID_INPUT_KEYBOARD}="1"
+SUBSYSTEM=="input", ATTR{name}=="virtio-tablet", ENV{ID_INPUT}="1", ENV{ID_INPUT_MOUSE}="1"
+UDEV
+
+mkdir -p /etc/lightdm/lightdm.conf.d
+cat > /etc/lightdm/lightdm.conf.d/50-autologin.conf << 'LDM'
+[Seat:*]
+autologin-user=root
+autologin-session=xfce
+LDM
+
+# Allow root autologin via LightDM (default PAM config blocks root)
+if [ -f /etc/pam.d/lightdm-autologin ]; then
+    sed -i '/pam_succeed_if.*uid/d' /etc/pam.d/lightdm-autologin
+fi
+
 mkdir -p /etc/network
 cat > /etc/network/interfaces << 'NET'
 auto lo
@@ -132,6 +166,8 @@ iface eth0 inet dhcp
 NET
 
 systemctl enable networking.service 2>/dev/null || true
+systemctl set-default graphical.target
+systemctl enable lightdm.service 2>/dev/null || true
 
 # Verify key commands
 ls -la /sbin/init

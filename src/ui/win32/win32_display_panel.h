@@ -48,9 +48,17 @@ private:
     void HandleMouse(UINT msg, WPARAM wp, LPARAM lp);
     void CalcDisplayRect(int cw, int ch, RECT* out) const;
 
+    void SetCaptured(bool captured);
+    void InstallKeyboardHook();
+    void UninstallKeyboardHook();
+    static LRESULT CALLBACK LowLevelKeyboardProc(int nCode, WPARAM wp, LPARAM lp);
+
     HWND hwnd_ = nullptr;
     bool captured_ = false;
     uint32_t mouse_buttons_ = 0;
+    HHOOK kb_hook_ = nullptr;
+    DWORD last_pointer_tick_ = 0;
+    static constexpr DWORD kPointerMinIntervalMs = 16;
 
     // Host-side framebuffer (full resource size)
     std::mutex fb_mutex_;
