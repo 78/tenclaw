@@ -233,15 +233,6 @@ void DisplayPanel::HandleMouse(UINT msg, WPARAM wp, LPARAM lp) {
 
     bool buttons_changed = (mouse_buttons_ != old_buttons);
 
-    // Throttle pure move events to avoid flooding the pipe.
-    // Button state changes are always sent immediately.
-    if (!buttons_changed) {
-        DWORD now = GetTickCount();
-        if (now - last_pointer_tick_ < kPointerMinIntervalMs)
-            return;
-        last_pointer_tick_ = now;
-    }
-
     int mx = GET_X_LPARAM(lp);
     int my = GET_Y_LPARAM(lp);
 
@@ -263,6 +254,24 @@ void DisplayPanel::HandleMouse(UINT msg, WPARAM wp, LPARAM lp) {
         static_cast<int64_t>(my - dst.top) * 32767 / dh);
     abs_x = (std::max)(0, (std::min)(abs_x, 32767));
     abs_y = (std::max)(0, (std::min)(abs_y, 32767));
+
+    // Skip if nothing actually changed (handles spurious WM_MOUSEMOVE
+    // that Windows can generate after InvalidateRect).
+    if (!buttons_changed && abs_x == last_abs_x_ && abs_y == last_abs_y_)
+        return;
+
+    // Throttle pure move events to avoid flooding the pipe.
+    // Button state changes are always sent immediately.
+    if (!buttons_changed) {
+        DWORD now = GetTickCount();
+        if (now - last_pointer_tick_ < kPointerMinIntervalMs)
+            return;
+        last_pointer_tick_ = now;
+    }
+
+    last_abs_x_ = abs_x;
+    last_abs_y_ = abs_y;
+    last_sent_buttons_ = mouse_buttons_;
 
     if (pointer_cb_) {
         pointer_cb_(abs_x, abs_y, mouse_buttons_);

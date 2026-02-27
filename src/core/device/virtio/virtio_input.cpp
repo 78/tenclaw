@@ -162,7 +162,8 @@ void VirtioInputDevice::OnQueueNotify(uint32_t queue_idx, VirtQueue& vq) {
     // We don't consume them here; InjectEvent will use them.
 }
 
-void VirtioInputDevice::InjectEvent(uint16_t type, uint16_t code, uint32_t value) {
+void VirtioInputDevice::InjectEvent(uint16_t type, uint16_t code,
+                                     uint32_t value, bool notify) {
     std::lock_guard<std::mutex> lock(inject_mutex_);
     if (!mmio_) return;
 
@@ -170,10 +171,26 @@ void VirtioInputDevice::InjectEvent(uint16_t type, uint16_t code, uint32_t value
     if (!vq || !vq->IsReady()) return;
 
     uint16_t head;
-    if (!vq->PopAvail(&head)) return;
+    if (!vq->PopAvail(&head)) {
+        // Available ring exhausted. If this was the notifying event
+        // (typically SYN_REPORT), still fire the interrupt so the guest
+        // processes already-pushed used buffers and replenishes the ring.
+        // Without this, previously pushed entries sit un-notified and the
+        // guest never recycles buffers -- permanent deadlock.
+        if (notify) {
+            mmio_->NotifyUsedBuffer();
+        }
+        return;
+    }
 
     std::vector<VirtqChainElem> chain;
-    if (!vq->WalkChain(head, &chain)) return;
+    if (!vq->WalkChain(head, &chain)) {
+        vq->PushUsed(head, 0);
+        if (notify) {
+            mmio_->NotifyUsedBuffer();
+        }
+        return;
+    }
 
     VirtioInputEvent ev{type, code, value};
     uint32_t written = 0;
@@ -186,5 +203,7 @@ void VirtioInputDevice::InjectEvent(uint16_t type, uint16_t code, uint32_t value
     }
 
     vq->PushUsed(head, written);
-    mmio_->NotifyUsedBuffer();
+    if (notify) {
+        mmio_->NotifyUsedBuffer();
+    }
 }

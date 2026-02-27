@@ -87,7 +87,11 @@ public:
 
     // Inject a single evdev event. Caller should follow a group of events
     // with InjectEvent(EV_SYN, SYN_REPORT, 0).
-    void InjectEvent(uint16_t type, uint16_t code, uint32_t value);
+    // When |notify| is false the used-buffer interrupt is deferred; the caller
+    // must eventually call InjectEvent with notify=true (typically for
+    // SYN_REPORT) to deliver the batched interrupt to the guest.
+    void InjectEvent(uint16_t type, uint16_t code, uint32_t value,
+                     bool notify = true);
 
     uint32_t GetDeviceId() const override { return 18; }
     uint64_t GetDeviceFeatures() const override;

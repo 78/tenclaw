@@ -58,6 +58,9 @@ private:
     uint32_t mouse_buttons_ = 0;
     HHOOK kb_hook_ = nullptr;
     DWORD last_pointer_tick_ = 0;
+    int32_t last_abs_x_ = -1;
+    int32_t last_abs_y_ = -1;
+    uint32_t last_sent_buttons_ = 0;
     static constexpr DWORD kPointerMinIntervalMs = 16;
 
     // Host-side framebuffer (full resource size)

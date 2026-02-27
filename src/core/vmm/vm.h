@@ -121,4 +121,5 @@ private:
     std::shared_ptr<ConsolePort> console_port_;
     std::shared_ptr<InputPort> input_port_;
     std::shared_ptr<DisplayPort> display_port_;
+    uint32_t inject_prev_buttons_ = 0;
 };

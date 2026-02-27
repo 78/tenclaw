@@ -19,7 +19,7 @@ void VirtioMmioDevice::DoReset() {
     driver_features_sel_ = 0;
     driver_features_ = 0;
     queue_sel_ = 0;
-    interrupt_status_ = 0;
+    interrupt_status_.store(0, std::memory_order_relaxed);
 
     for (uint32_t i = 0; i < queues_.size(); i++) {
         queues_[i].Reset();
@@ -64,7 +64,7 @@ void VirtioMmioDevice::MmioRead(uint64_t offset, uint8_t size,
             val = queues_[queue_sel_].IsReady() ? 1 : 0;
         break;
     case kInterruptStatus:
-        val = interrupt_status_;
+        val = interrupt_status_.load(std::memory_order_acquire);
         break;
     case kStatus:
         val = status_;
@@ -137,7 +137,7 @@ void VirtioMmioDevice::MmioWrite(uint64_t offset, uint8_t size,
         }
         break;
     case kInterruptACK:
-        interrupt_status_ &= ~val;
+        interrupt_status_.fetch_and(~val, std::memory_order_acq_rel);
         break;
     case kStatus:
         if (val == 0) {
@@ -189,12 +189,12 @@ void VirtioMmioDevice::MmioWrite(uint64_t offset, uint8_t size,
 }
 
 void VirtioMmioDevice::NotifyUsedBuffer() {
-    interrupt_status_ |= 1;  // VIRTIO_MMIO_INT_VRING
+    interrupt_status_.fetch_or(1, std::memory_order_release);  // VIRTIO_MMIO_INT_VRING
     if (irq_callback_) irq_callback_();
 }
 
 void VirtioMmioDevice::NotifyConfigChange() {
     config_generation_++;
-    interrupt_status_ |= 2;  // VIRTIO_MMIO_INT_CONFIG
+    interrupt_status_.fetch_or(2, std::memory_order_release);  // VIRTIO_MMIO_INT_CONFIG
     if (irq_callback_) irq_callback_();
 }

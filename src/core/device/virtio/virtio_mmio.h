@@ -2,6 +2,7 @@
 
 #include "core/device/device.h"
 #include "core/device/virtio/virtqueue.h"
+#include <atomic>
 #include <functional>
 #include <vector>
 
@@ -88,7 +89,7 @@ private:
     uint32_t driver_features_sel_ = 0;
     uint64_t driver_features_ = 0;
     uint32_t queue_sel_ = 0;
-    uint32_t interrupt_status_ = 0;
+    std::atomic<uint32_t> interrupt_status_{0};
     uint32_t config_generation_ = 0;
 
     std::vector<VirtQueue> queues_;

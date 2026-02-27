@@ -381,25 +381,40 @@ void Vm::VCpuThreadFunc(uint32_t vcpu_index) {
 void Vm::HidInputThreadFunc() {
     if (!input_port_) return;
 
+    uint32_t prev_buttons = 0;
+
     while (running_) {
         KeyboardEvent kev;
         while (input_port_->PollKeyboard(&kev)) {
             if (virtio_kbd_) {
                 virtio_kbd_->InjectEvent(EV_KEY, static_cast<uint16_t>(kev.key_code),
-                                         kev.pressed ? 1 : 0);
-                virtio_kbd_->InjectEvent(EV_SYN, SYN_REPORT, 0);
+                                         kev.pressed ? 1 : 0, /*notify=*/false);
+                virtio_kbd_->InjectEvent(EV_SYN, SYN_REPORT, 0, /*notify=*/true);
             }
         }
 
         PointerEvent pev;
         while (input_port_->PollPointer(&pev)) {
             if (virtio_tablet_) {
-                virtio_tablet_->InjectEvent(EV_ABS, ABS_X, static_cast<uint32_t>(pev.x));
-                virtio_tablet_->InjectEvent(EV_ABS, ABS_Y, static_cast<uint32_t>(pev.y));
-                virtio_tablet_->InjectEvent(EV_KEY, BTN_LEFT, (pev.buttons & 1) ? 1 : 0);
-                virtio_tablet_->InjectEvent(EV_KEY, BTN_RIGHT, (pev.buttons & 2) ? 1 : 0);
-                virtio_tablet_->InjectEvent(EV_KEY, BTN_MIDDLE, (pev.buttons & 4) ? 1 : 0);
-                virtio_tablet_->InjectEvent(EV_SYN, SYN_REPORT, 0);
+                virtio_tablet_->InjectEvent(EV_ABS, ABS_X,
+                    static_cast<uint32_t>(pev.x), /*notify=*/false);
+                virtio_tablet_->InjectEvent(EV_ABS, ABS_Y,
+                    static_cast<uint32_t>(pev.y), /*notify=*/false);
+
+                uint32_t btns = pev.buttons;
+                if ((btns & 1) != (prev_buttons & 1))
+                    virtio_tablet_->InjectEvent(EV_KEY, BTN_LEFT,
+                        (btns & 1) ? 1 : 0, /*notify=*/false);
+                if ((btns & 2) != (prev_buttons & 2))
+                    virtio_tablet_->InjectEvent(EV_KEY, BTN_RIGHT,
+                        (btns & 2) ? 1 : 0, /*notify=*/false);
+                if ((btns & 4) != (prev_buttons & 4))
+                    virtio_tablet_->InjectEvent(EV_KEY, BTN_MIDDLE,
+                        (btns & 4) ? 1 : 0, /*notify=*/false);
+                prev_buttons = btns;
+
+                virtio_tablet_->InjectEvent(EV_SYN, SYN_REPORT, 0,
+                                            /*notify=*/true);
             }
         }
 
@@ -462,18 +477,27 @@ void Vm::UpdatePortForwards(const std::vector<PortForward>& forwards) {
 void Vm::InjectKeyEvent(uint32_t evdev_code, bool pressed) {
     if (virtio_kbd_) {
         virtio_kbd_->InjectEvent(EV_KEY, static_cast<uint16_t>(evdev_code),
-                                 pressed ? 1 : 0);
-        virtio_kbd_->InjectEvent(EV_SYN, SYN_REPORT, 0);
+                                 pressed ? 1 : 0, /*notify=*/false);
+        virtio_kbd_->InjectEvent(EV_SYN, SYN_REPORT, 0, /*notify=*/true);
     }
 }
 
 void Vm::InjectPointerEvent(int32_t x, int32_t y, uint32_t buttons) {
     if (virtio_tablet_) {
-        virtio_tablet_->InjectEvent(EV_ABS, ABS_X, static_cast<uint32_t>(x));
-        virtio_tablet_->InjectEvent(EV_ABS, ABS_Y, static_cast<uint32_t>(y));
-        virtio_tablet_->InjectEvent(EV_KEY, BTN_LEFT, (buttons & 1) ? 1 : 0);
-        virtio_tablet_->InjectEvent(EV_KEY, BTN_RIGHT, (buttons & 2) ? 1 : 0);
-        virtio_tablet_->InjectEvent(EV_KEY, BTN_MIDDLE, (buttons & 4) ? 1 : 0);
-        virtio_tablet_->InjectEvent(EV_SYN, SYN_REPORT, 0);
+        virtio_tablet_->InjectEvent(EV_ABS, ABS_X,
+            static_cast<uint32_t>(x), /*notify=*/false);
+        virtio_tablet_->InjectEvent(EV_ABS, ABS_Y,
+            static_cast<uint32_t>(y), /*notify=*/false);
+        if ((buttons & 1) != (inject_prev_buttons_ & 1))
+            virtio_tablet_->InjectEvent(EV_KEY, BTN_LEFT,
+                (buttons & 1) ? 1 : 0, /*notify=*/false);
+        if ((buttons & 2) != (inject_prev_buttons_ & 2))
+            virtio_tablet_->InjectEvent(EV_KEY, BTN_RIGHT,
+                (buttons & 2) ? 1 : 0, /*notify=*/false);
+        if ((buttons & 4) != (inject_prev_buttons_ & 4))
+            virtio_tablet_->InjectEvent(EV_KEY, BTN_MIDDLE,
+                (buttons & 4) ? 1 : 0, /*notify=*/false);
+        inject_prev_buttons_ = buttons;
+        virtio_tablet_->InjectEvent(EV_SYN, SYN_REPORT, 0, /*notify=*/true);
     }
 }
