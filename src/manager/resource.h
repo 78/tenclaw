@@ -1,5 +1,8 @@
 #pragma once
 
+// Application icon resource ID
+#define IDI_APP_ICON          1
+
 // Toolbar bitmap resource IDs
 #define IDB_TOOLBAR_NEW_VM    101
 #define IDB_TOOLBAR_EDIT      102

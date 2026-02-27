@@ -226,7 +226,12 @@ static ATOM RegisterMainClass(HINSTANCE hinst) {
     wc.hCursor       = LoadCursor(nullptr, IDC_ARROW);
     wc.hbrBackground = reinterpret_cast<HBRUSH>(COLOR_WINDOW + 1);
     wc.lpszClassName = kWndClass;
-    wc.hIcon         = LoadIcon(nullptr, IDI_APPLICATION);
+    wc.hIcon         = static_cast<HICON>(LoadImageA(hinst, MAKEINTRESOURCEA(IDI_APP_ICON),
+                           IMAGE_ICON, 0, 0, LR_DEFAULTSIZE | LR_SHARED));
+    wc.hIconSm       = static_cast<HICON>(LoadImageA(hinst, MAKEINTRESOURCEA(IDI_APP_ICON),
+                           IMAGE_ICON, GetSystemMetrics(SM_CXSMICON),
+                           GetSystemMetrics(SM_CYSMICON), LR_SHARED));
+    if (!wc.hIcon) wc.hIcon = LoadIcon(nullptr, IDI_APPLICATION);
     return RegisterClassExA(&wc);
 }
 
@@ -341,8 +346,8 @@ static HWND CreateToolbar(HWND parent, HINSTANCE hinst) {
 static constexpr int kListItemHeight = 80;
 
 static HWND CreateVmListBox(HWND parent, HINSTANCE hinst) {
-    HWND lb = CreateWindowExA(0, "LISTBOX", nullptr,
-        WS_CHILD | WS_VISIBLE | WS_BORDER | WS_VSCROLL |
+    HWND lb = CreateWindowExA(WS_EX_CLIENTEDGE, "LISTBOX", nullptr,
+        WS_CHILD | WS_VISIBLE | WS_VSCROLL |
         LBS_OWNERDRAWFIXED | LBS_HASSTRINGS | LBS_NOTIFY | LBS_NOINTEGRALHEIGHT,
         0, 0, 0, 0, parent, reinterpret_cast<HMENU>(IDC_LISTVIEW), hinst, nullptr);
     SendMessageA(lb, LB_SETITEMHEIGHT, 0, MAKELPARAM(kListItemHeight, 0));
@@ -1111,6 +1116,7 @@ Win32UiShell::Win32UiShell(ManagerService& manager)
         reinterpret_cast<HMENU>(IDC_TAB), hinst, nullptr);
     SendMessage(impl_->tab, WM_SETFONT,
         reinterpret_cast<WPARAM>(impl_->ui_font), FALSE);
+    SendMessage(impl_->tab, TCM_SETPADDING, 0, MAKELPARAM(24, 8));
     {
         TCITEMA ti{};
         ti.mask = TCIF_TEXT;

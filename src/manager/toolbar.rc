@@ -1,5 +1,8 @@
 #include "resource.h"
 
+// Application icon
+IDI_APP_ICON ICON "resources/app.ico"
+
 // Toolbar icons (24x24 BMP, 24-bit color recommended)
 // Place your .bmp files in src/manager/resources/
 IDB_TOOLBAR_NEW_VM    BITMAP "resources/new_vm.bmp"

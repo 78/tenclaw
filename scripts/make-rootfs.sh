@@ -120,13 +120,20 @@ mkdir -p /etc/lightdm/lightdm.conf.d
 cat > /etc/lightdm/lightdm.conf.d/50-autologin.conf << 'LDM'
 [Seat:*]
 autologin-user=root
+autologin-user-timeout=0
 autologin-session=xfce
+user-session=xfce
+greeter-session=lightdm-gtk-greeter
 LDM
 
 # Allow root autologin via LightDM (default PAM config blocks root)
-if [ -f /etc/pam.d/lightdm-autologin ]; then
-    sed -i '/pam_succeed_if.*uid/d' /etc/pam.d/lightdm-autologin
-fi
+# Completely rewrite the PAM config to allow root
+cat > /etc/pam.d/lightdm-autologin << 'PAM'
+auth    required    pam_env.so
+auth    required    pam_permit.so
+account required    pam_unix.so
+session required    pam_unix.so
+PAM
 
 # Auto-resize display when host window changes (virtio-gpu hotplug)
 echo "Setting up virtio-gpu auto-resize..."
@@ -139,7 +146,15 @@ cat > /usr/local/bin/virtio-gpu-resize.sh << 'RESIZE'
 #!/bin/bash
 sleep 0.1
 export DISPLAY=:0
-export XAUTHORITY=/root/.Xauthority
+
+# Try to find valid XAUTHORITY
+for auth in /root/.Xauthority /var/run/lightdm/root/:0 /run/user/0/gdm/Xauthority; do
+    if [ -f "$auth" ]; then
+        export XAUTHORITY="$auth"
+        break
+    fi
+done
+
 for output in Virtual-1 Virtual-0; do
     xrandr --output "$output" --auto 2>/dev/null && break
 done
