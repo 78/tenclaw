@@ -1,4 +1,5 @@
 #include "ui/common/i18n.h"
+#include "version.h"
 
 #define NOMINMAX
 #define WIN32_LEAN_AND_MEAN
@@ -87,6 +88,9 @@ static const char* kStringsEn[] = {
     "Help",                                  // kMenuHelp
     "Website",                               // kMenuWebsite
     "Check for Updates",                     // kMenuCheckUpdate
+    "About...",                              // kMenuAbout
+    "About " TENBOX_PRODUCT_NAME,            // kAboutTitle
+    TENBOX_PRODUCT_NAME " Manager\nVersion " TENBOX_VERSION_STR "\n\nA lightweight virtual machine manager for Windows.\n\n" TENBOX_COPYRIGHT,  // kAboutText
     "Tag",                                   // kSfColTag
     "Host Path",                             // kSfColHostPath
     "Mode",                                  // kSfColMode
@@ -179,6 +183,9 @@ static const char* kStringsZhCN[] = {
     "帮助",                                  // kMenuHelp
     "官方网站",                              // kMenuWebsite
     "检查更新",                              // kMenuCheckUpdate
+    "关于...",                               // kMenuAbout
+    "关于 " TENBOX_PRODUCT_NAME,             // kAboutTitle
+    TENBOX_PRODUCT_NAME " 管理器\n版本 " TENBOX_VERSION_STR "\n\n一款轻量级的 Windows 虚拟机管理器。\n\n" TENBOX_COPYRIGHT,  // kAboutText
     "标签",                                  // kSfColTag
     "主机路径",                              // kSfColHostPath
     "模式",                                  // kSfColMode

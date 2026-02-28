@@ -45,6 +45,7 @@ enum CmdId : UINT {
     IDM_DELETE      = 1015,
     IDM_WEBSITE     = 1020,
     IDM_CHECK_UPDATE = 1021,
+    IDM_ABOUT       = 1022,
 };
 
 // ── Control IDs ──
@@ -222,6 +223,8 @@ static HMENU BuildMenuBar() {
     HMENU help_menu = CreatePopupMenu();
     AppendMenuA(help_menu, MF_STRING, IDM_WEBSITE,      i18n::tr(S::kMenuWebsite));
     AppendMenuA(help_menu, MF_STRING, IDM_CHECK_UPDATE,  i18n::tr(S::kMenuCheckUpdate));
+    AppendMenuA(help_menu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuA(help_menu, MF_STRING, IDM_ABOUT,        i18n::tr(S::kMenuAbout));
     AppendMenuA(bar, MF_POPUP, reinterpret_cast<UINT_PTR>(help_menu), i18n::tr(S::kMenuHelp));
 
     return bar;
@@ -606,6 +609,10 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             return 0;
         case IDM_CHECK_UPDATE:
             ShellExecuteA(hwnd, "open", "https://github.com/78/tenbox/releases", nullptr, nullptr, SW_SHOWNORMAL);
+            return 0;
+        case IDM_ABOUT:
+            MessageBoxA(hwnd, i18n::tr(i18n::S::kAboutText),
+                i18n::tr(i18n::S::kAboutTitle), MB_OK | MB_ICONINFORMATION);
             return 0;
         case IDM_START: {
             if (p->selected_index < 0 ||

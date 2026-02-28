@@ -14,6 +14,7 @@ add_library(tenbox_ui_shell_win32 STATIC
 target_include_directories(tenbox_ui_shell_win32
     PUBLIC
         ${CMAKE_SOURCE_DIR}/src
+        ${CMAKE_BINARY_DIR}
 )
 
 target_link_libraries(tenbox_ui_shell_win32 PUBLIC comctl32 uxtheme ole32)

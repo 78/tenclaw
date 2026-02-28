@@ -129,6 +129,9 @@ enum class S {
     kMenuHelp,
     kMenuWebsite,
     kMenuCheckUpdate,
+    kMenuAbout,
+    kAboutTitle,
+    kAboutText,
 
     // Shared folders tab
     kSfColTag,
