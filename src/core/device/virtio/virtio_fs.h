@@ -327,7 +327,7 @@ struct VirtioFsConfig {
 // Shared folder info
 struct ShareInfo {
     std::string tag;
-    std::wstring host_path;
+    std::string host_path;
     bool readonly;
     uint64_t root_inode;  // inode of the share's root directory
 };
@@ -335,7 +335,7 @@ struct ShareInfo {
 // Inode info cached on the host
 struct InodeInfo {
     uint64_t inode;
-    std::wstring host_path;
+    std::string host_path;
     uint64_t nlookup;
     bool is_dir;
     std::string share_tag;  // which share this inode belongs to (empty for virtual root)
@@ -345,7 +345,7 @@ struct InodeInfo {
 struct FileHandle {
     HANDLE handle;
     bool is_dir;
-    std::wstring path;
+    std::string path;
     std::string share_tag;
 };
 
@@ -420,22 +420,20 @@ private:
 
     // Helper functions
     void WriteErrorResponse(std::vector<uint8_t>& out_buf, uint64_t unique, int32_t error);
-    int32_t FillAttr(const std::wstring& path, FuseAttr* attr, uint64_t inode, bool share_readonly = false);
+    int32_t FillAttr(const std::string& path, FuseAttr* attr, uint64_t inode, bool share_readonly = false);
     int32_t FillVirtualRootAttr(FuseAttr* attr);
     int32_t FillShareRootAttr(const ShareInfo& share, FuseAttr* attr);
     int32_t WindowsErrorToFuse(DWORD error);
     uint64_t AllocInode();
     InodeInfo* GetInode(uint64_t inode);
-    uint64_t GetOrCreateInode(const std::wstring& path, bool is_dir, const std::string& share_tag);
+    uint64_t GetOrCreateInode(const std::string& path, bool is_dir, const std::string& share_tag);
     void RemoveInode(uint64_t inode);
-    uint64_t AllocFileHandle(HANDLE h, bool is_dir, const std::wstring& path, const std::string& share_tag);
+    uint64_t AllocFileHandle(HANDLE h, bool is_dir, const std::string& path, const std::string& share_tag);
     FileHandle* GetFileHandle(uint64_t fh);
     void CloseFileHandle(uint64_t fh);
-    std::wstring NodeIdToPath(uint64_t nodeid);
+    std::string NodeIdToPath(uint64_t nodeid);
     std::string NodeIdToShareTag(uint64_t nodeid);
     bool IsShareReadonly(const std::string& share_tag);
-    std::wstring Utf8ToWide(const std::string& utf8);
-    std::string WideToUtf8(const std::wstring& wide);
 
     VirtioMmioDevice* mmio_ = nullptr;
     std::string mount_tag_;  // virtiofs mount tag (e.g., "shared")
@@ -453,6 +451,6 @@ private:
     
     // Inode management
     std::unordered_map<uint64_t, InodeInfo> inodes_;
-    std::unordered_map<std::wstring, uint64_t> path_to_inode_;
+    std::unordered_map<std::string, uint64_t> path_to_inode_;
     std::unordered_map<uint64_t, FileHandle> file_handles_;
 };
