@@ -56,6 +56,7 @@ struct VmRecord {
     VmRuntimeHandle runtime;
     int last_exit_code = 0;
     bool reboot_pending = false;
+    bool guest_agent_connected = false;
 
     VmRecord() = default;
     VmRecord(VmSpec s) : spec(std::move(s)) {}
@@ -128,6 +129,11 @@ public:
     void SetClipboardDataCallback(ClipboardDataCallback cb);
     void SetClipboardRequestCallback(ClipboardRequestCallback cb);
 
+    // Guest Agent state callback
+    using GuestAgentStateCallback = std::function<void(const std::string& vm_id, bool connected)>;
+    void SetGuestAgentStateCallback(GuestAgentStateCallback cb);
+    bool IsGuestAgentConnected(const std::string& vm_id) const;
+
     bool SendKeyEvent(const std::string& vm_id, uint32_t key_code, bool pressed);
     bool SendPointerEvent(const std::string& vm_id, int32_t x, int32_t y, uint32_t buttons);
     bool SendWheelEvent(const std::string& vm_id, int32_t delta);
@@ -176,5 +182,6 @@ private:
     ClipboardGrabCallback clipboard_grab_callback_;
     ClipboardDataCallback clipboard_data_callback_;
     ClipboardRequestCallback clipboard_request_callback_;
+    GuestAgentStateCallback guest_agent_state_callback_;
     void* job_object_ = nullptr;
 };

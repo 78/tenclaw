@@ -24,6 +24,12 @@ uint32_t VirtioSerialDevice::GetNumQueues() const {
     return 4 + (max_ports_ > 1 ? (max_ports_ - 1) * 2 : 0);
 }
 
+bool VirtioSerialDevice::IsPortConnected(uint32_t port_id) const {
+    std::lock_guard<std::recursive_mutex> lock(const_cast<std::recursive_mutex&>(mutex_));
+    if (port_id >= ports_.size()) return false;
+    return ports_[port_id].guest_connected;
+}
+
 void VirtioSerialDevice::SetPortName(uint32_t port_id, const std::string& name) {
     std::lock_guard<std::recursive_mutex> lock(mutex_);
     if (port_id < ports_.size()) {
@@ -120,9 +126,13 @@ void VirtioSerialDevice::HandleControlMessage(VirtQueue& vq) {
 
         case VIRTIO_CONSOLE_PORT_OPEN:
             if (ctrl.id < ports_.size()) {
-                ports_[ctrl.id].guest_connected = (ctrl.value == 1);
+                bool opened = (ctrl.value == 1);
+                ports_[ctrl.id].guest_connected = opened;
                 LOG_INFO("VirtIO Serial port %u: guest %s",
                          ctrl.id, ctrl.value ? "opened" : "closed");
+                if (port_open_callback_) {
+                    port_open_callback_(ctrl.id, opened);
+                }
             }
             break;
 

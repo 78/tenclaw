@@ -49,6 +49,7 @@ static_assert(sizeof(VirtioConsoleControl) == 8);
 class VirtioSerialDevice : public VirtioDeviceOps {
 public:
     using DataCallback = std::function<void(uint32_t port_id, const uint8_t* data, size_t len)>;
+    using PortOpenCallback = std::function<void(uint32_t port_id, bool opened)>;
 
     explicit VirtioSerialDevice(uint32_t max_ports = 1);
     ~VirtioSerialDevice() override = default;
@@ -57,6 +58,11 @@ public:
 
     // Set callback for data received from guest
     void SetDataCallback(DataCallback cb) { data_callback_ = std::move(cb); }
+
+    // Set callback for port open/close events
+    void SetPortOpenCallback(PortOpenCallback cb) { port_open_callback_ = std::move(cb); }
+
+    bool IsPortConnected(uint32_t port_id) const;
 
     // Configure port name (must be called before guest driver initialization)
     void SetPortName(uint32_t port_id, const std::string& name);
@@ -91,6 +97,7 @@ private:
     uint32_t max_ports_ = 1;
     std::vector<PortState> ports_;
     DataCallback data_callback_;
+    PortOpenCallback port_open_callback_;
     std::recursive_mutex mutex_;
     bool driver_ready_ = false;
 };

@@ -19,6 +19,7 @@
 #include "core/device/virtio/virtio_serial.h"
 #include "core/device/virtio/virtio_fs.h"
 #include "core/vdagent/vdagent_handler.h"
+#include "core/guest_agent/guest_agent_handler.h"
 #include "core/net/net_backend.h"
 #include "core/arch/x86_64/acpi.h"
 #include "common/ports.h"
@@ -84,6 +85,11 @@ public:
     bool RemoveSharedFolder(const std::string& tag);
     std::vector<std::string> GetSharedFolderTags() const;
 
+    // Guest Agent
+    GuestAgentHandler* GetGuestAgentHandler() { return guest_agent_handler_.get(); }
+    bool IsGuestAgentConnected() const;
+    void GuestAgentShutdown(const std::string& mode = "powerdown");
+
 private:
     Vm() = default;
 
@@ -141,10 +147,11 @@ private:
     std::unique_ptr<VirtioGpuDevice> virtio_gpu_;
     std::unique_ptr<VirtioMmioDevice> virtio_mmio_gpu_;
 
-    // VirtIO Serial (for vdagent clipboard)
+    // VirtIO Serial (for vdagent clipboard + guest agent)
     std::unique_ptr<VirtioSerialDevice> virtio_serial_;
     std::unique_ptr<VirtioMmioDevice> virtio_mmio_serial_;
     std::unique_ptr<VDAgentHandler> vdagent_handler_;
+    std::unique_ptr<GuestAgentHandler> guest_agent_handler_;
 
     // VirtIO FS (shared folders) - single device with multiple shares
     std::unique_ptr<VirtioFsDevice> virtio_fs_;

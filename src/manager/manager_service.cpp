@@ -411,8 +411,27 @@ bool ManagerService::StopVm(const std::string& vm_id, std::string* error) {
 }
 
 bool ManagerService::RebootVm(const std::string& vm_id, std::string* error) {
-    if (!StopVm(vm_id, error)) return false;
-    return StartVm(vm_id, error);
+    auto it = vms_.find(vm_id);
+    if (it == vms_.end()) {
+        if (error) *error = "vm not found";
+        return false;
+    }
+    VmRecord& vm = it->second;
+    if (vm.state == VmPowerState::kStopped) {
+        return StartVm(vm_id, error);
+    }
+
+    vm.state = VmPowerState::kStopping;
+    vm.reboot_pending = true;
+    ipc::Message msg;
+    msg.channel = ipc::Channel::kControl;
+    msg.kind = ipc::Kind::kRequest;
+    msg.type = "runtime.command";
+    msg.vm_id = vm_id;
+    msg.request_id = GetTickCount64();
+    msg.fields["command"] = "reboot";
+    SendRuntimeMessage(vm, msg);
+    return true;
 }
 
 bool ManagerService::ShutdownVm(const std::string& vm_id, std::string* error) {
@@ -602,6 +621,17 @@ void ManagerService::SetClipboardDataCallback(ClipboardDataCallback cb) {
 void ManagerService::SetClipboardRequestCallback(ClipboardRequestCallback cb) {
     std::lock_guard<std::mutex> lock(vms_mutex_);
     clipboard_request_callback_ = std::move(cb);
+}
+
+void ManagerService::SetGuestAgentStateCallback(GuestAgentStateCallback cb) {
+    std::lock_guard<std::mutex> lock(vms_mutex_);
+    guest_agent_state_callback_ = std::move(cb);
+}
+
+bool ManagerService::IsGuestAgentConnected(const std::string& vm_id) const {
+    auto it = vms_.find(vm_id);
+    if (it == vms_.end()) return false;
+    return it->second.guest_agent_connected;
 }
 
 bool ManagerService::SendKeyEvent(const std::string& vm_id, uint32_t key_code, bool pressed) {
@@ -997,6 +1027,7 @@ void ManagerService::HandleProcessExit(const std::string& vm_id) {
         // Exit code 128 indicates a reboot request from the guest
         needs_reboot = vm.reboot_pending || (vm.last_exit_code == 128);
         vm.reboot_pending = false;
+        vm.guest_agent_connected = false;
         vm.state = VmPowerState::kStopped;
         cb = state_change_callback_;
     }
@@ -1207,6 +1238,27 @@ void ManagerService::HandleIncomingMessage(const std::string& vm_id, const ipc::
                     vm_it->second.reboot_pending = true;
                 }
             }
+        }
+        return;
+    }
+
+    // Guest Agent state events
+    if (msg.channel == ipc::Channel::kControl &&
+        msg.kind == ipc::Kind::kEvent &&
+        msg.type == "guest_agent.state") {
+        auto it_conn = msg.fields.find("connected");
+        if (it_conn != msg.fields.end()) {
+            bool connected = (it_conn->second == "1");
+            GuestAgentStateCallback cb;
+            {
+                std::lock_guard<std::mutex> lock(vms_mutex_);
+                auto vm_it = vms_.find(vm_id);
+                if (vm_it != vms_.end()) {
+                    vm_it->second.guest_agent_connected = connected;
+                }
+                cb = guest_agent_state_callback_;
+            }
+            if (cb) cb(vm_id, connected);
         }
         return;
     }

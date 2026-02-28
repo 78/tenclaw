@@ -453,6 +453,43 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y spice-vdagent
 EOF
 }
 
+do_install_guest_agent() {
+    sudo chroot "$MOUNT_DIR" /bin/bash -e << 'EOF'
+if dpkg -l qemu-guest-agent &>/dev/null; then
+    echo "  qemu-guest-agent already installed"
+    exit 0
+fi
+DEBIAN_FRONTEND=noninteractive apt-get install -y qemu-guest-agent
+EOF
+}
+
+do_config_guest_agent() {
+    sudo chroot "$MOUNT_DIR" /bin/bash -e << 'EOF'
+if [ -f /etc/udev/rules.d/99-qemu-guest-agent.rules ]; then
+    echo "  Guest agent already configured"
+    exit 0
+fi
+
+echo "Setting up qemu-guest-agent..."
+
+cat > /etc/udev/rules.d/99-qemu-guest-agent.rules << 'UDEV'
+SUBSYSTEM=="virtio-ports", ATTR{name}=="org.qemu.guest_agent.0", SYMLINK+="virtio-ports/org.qemu.guest_agent.0", TAG+="systemd"
+UDEV
+
+mkdir -p /etc/systemd/system/qemu-guest-agent.service.d
+cat > /etc/systemd/system/qemu-guest-agent.service.d/override.conf << 'OVERRIDE'
+[Unit]
+ConditionPathExists=/dev/virtio-ports/org.qemu.guest_agent.0
+
+[Service]
+ExecStart=
+ExecStart=/usr/sbin/qemu-ga --method=virtio-serial --path=/dev/virtio-ports/org.qemu.guest_agent.0
+OVERRIDE
+
+systemctl enable qemu-guest-agent.service 2>/dev/null || true
+EOF
+}
+
 do_install_chrome() {
     # Download Chrome (with cache, atomic write to avoid corruption)
     if [ -f "$CACHE_CHROME" ] && dpkg-deb --info "$CACHE_CHROME" &>/dev/null; then
@@ -784,6 +821,7 @@ run_step "config_basic"   "Basic configuration"       do_config_basic
 run_step "apt_update"     "Updating apt sources"      do_apt_update
 run_step "install_xfce"   "Installing XFCE desktop"   do_install_xfce
 run_step "install_spice"  "Installing SPICE vdagent"  do_install_spice
+run_step "install_guest_agent" "Installing Guest Agent" do_install_guest_agent
 run_step "install_chrome" "Installing Chrome"         do_install_chrome
 run_step "config_chrome"  "Configuring Chrome"        do_config_chrome
 run_step "install_devtools" "Installing dev tools"    do_install_devtools
@@ -796,6 +834,7 @@ run_step "config_virtio_gpu" "Configuring virtio-gpu" do_config_virtio_gpu
 run_step "config_network" "Configuring network"       do_config_network
 run_step "config_virtiofs" "Configuring virtio-fs"    do_config_virtiofs
 run_step "config_spice"   "Configuring SPICE"         do_config_spice
+run_step "config_guest_agent" "Configuring Guest Agent" do_config_guest_agent
 run_step "verify_install" "Verifying installation"    do_verify_install
 run_step "cleanup_chroot" "Cleaning up chroot"        do_cleanup_chroot
 run_step "unmount_image"  "Unmounting image"          do_unmount_image

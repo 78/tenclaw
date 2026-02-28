@@ -444,6 +444,20 @@ void RuntimeControlService::Stop() {
 
 void RuntimeControlService::AttachVm(Vm* vm) {
     vm_ = vm;
+
+    if (vm_ && vm_->GetGuestAgentHandler()) {
+        vm_->GetGuestAgentHandler()->SetConnectedCallback([this](bool connected) {
+            ipc::Message event;
+            event.kind = ipc::Kind::kEvent;
+            event.channel = ipc::Channel::kControl;
+            event.type = "guest_agent.state";
+            event.vm_id = vm_id_;
+            event.request_id = next_event_id_++;
+            event.fields["connected"] = connected ? "1" : "0";
+            Send(event);
+            LOG_INFO("RuntimeService: guest agent %s", connected ? "connected" : "disconnected");
+        });
+    }
 }
 
 void RuntimeControlService::PublishState(const std::string& state, int exit_code) {
@@ -536,7 +550,9 @@ void RuntimeControlService::HandleMessage(const ipc::Message& message) {
         if (cmd == "stop") {
             if (vm_) vm_->RequestStop();
         } else if (cmd == "shutdown") {
-            if (vm_) {
+            if (vm_ && vm_->IsGuestAgentConnected()) {
+                vm_->GuestAgentShutdown("powerdown");
+            } else if (vm_) {
                 vm_->TriggerPowerButton();
                 static const char kPoweroff[] = "\npoweroff\n";
                 vm_->InjectConsoleBytes(
@@ -544,8 +560,12 @@ void RuntimeControlService::HandleMessage(const ipc::Message& message) {
                     sizeof(kPoweroff) - 1);
             }
         } else if (cmd == "reboot") {
-            if (vm_) vm_->RequestStop();
-            resp.fields["note"] = "reboot not implemented, performed stop";
+            if (vm_ && vm_->IsGuestAgentConnected()) {
+                vm_->GuestAgentShutdown("reboot");
+            } else if (vm_) {
+                vm_->RequestStop();
+                resp.fields["note"] = "guest agent unavailable, performed stop";
+            }
         } else if (cmd == "start") {
             resp.fields["note"] = "runtime already started by process launch";
         } else {

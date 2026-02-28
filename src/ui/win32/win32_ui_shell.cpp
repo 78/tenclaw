@@ -460,6 +460,7 @@ static void UpdateCommandStates(Impl* p) {
                    p->selected_index < static_cast<int>(p->records.size());
     bool running = has_sel && IsVmRunning(p->records[p->selected_index].state);
     bool stopping = has_sel && p->records[p->selected_index].state == VmPowerState::kStopping;
+    bool ga_ok = has_sel && p->records[p->selected_index].guest_agent_connected;
 
     auto EnableCmd = [&](UINT id, bool en) {
         SendMessage(p->toolbar, TB_ENABLEBUTTON, id, MAKELONG(en ? TRUE : FALSE, 0));
@@ -471,8 +472,8 @@ static void UpdateCommandStates(Impl* p) {
 
     EnableCmd(IDM_START,    has_sel && !running);
     EnableCmd(IDM_STOP,     has_sel && running);
-    EnableCmd(IDM_REBOOT,   has_sel && running && !stopping);
-    EnableCmd(IDM_SHUTDOWN, has_sel && running && !stopping);
+    EnableCmd(IDM_REBOOT,   has_sel && running && !stopping && ga_ok);
+    EnableCmd(IDM_SHUTDOWN, has_sel && running && !stopping && ga_ok);
     EnableCmd(IDM_EDIT,     has_sel);
     EnableCmd(IDM_DELETE,   has_sel && !running);
 
@@ -1029,6 +1030,14 @@ Win32UiShell::Win32UiShell(ManagerService& manager)
             }
         });
     });
+
+    manager_.SetGuestAgentStateCallback(
+        [this](const std::string& vm_id, bool connected) {
+            (void)connected;
+            InvokeOnUiThread([this, vm_id]() {
+                RefreshVmList();
+            });
+        });
 
     RefreshVmList();
     LayoutControls(impl_.get());

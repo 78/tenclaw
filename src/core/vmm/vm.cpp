@@ -344,11 +344,16 @@ bool Vm::SetupVirtioGpu(uint32_t width, uint32_t height) {
 }
 
 bool Vm::SetupVirtioSerial() {
-    virtio_serial_ = std::make_unique<VirtioSerialDevice>(1);
+    // 2 ports: port 0 = vdagent (clipboard), port 1 = QEMU Guest Agent
+    virtio_serial_ = std::make_unique<VirtioSerialDevice>(2);
     virtio_serial_->SetPortName(0, "com.redhat.spice.0");
+    virtio_serial_->SetPortName(1, "org.qemu.guest_agent.0");
 
     vdagent_handler_ = std::make_unique<VDAgentHandler>();
     vdagent_handler_->SetSerialDevice(virtio_serial_.get(), 0);
+
+    guest_agent_handler_ = std::make_unique<GuestAgentHandler>();
+    guest_agent_handler_->SetSerialDevice(virtio_serial_.get(), 1);
 
     if (clipboard_port_) {
         vdagent_handler_->SetClipboardCallback([this](const ClipboardEvent& event) {
@@ -360,6 +365,15 @@ bool Vm::SetupVirtioSerial() {
         if (vdagent_handler_ && port_id == 0) {
             vdagent_handler_->OnDataReceived(data, len);
         }
+        if (guest_agent_handler_ && port_id == 1) {
+            guest_agent_handler_->OnDataReceived(data, len);
+        }
+    });
+
+    virtio_serial_->SetPortOpenCallback([this](uint32_t port_id, bool opened) {
+        if (guest_agent_handler_ && port_id == 1) {
+            guest_agent_handler_->OnPortOpen(opened);
+        }
     });
 
     virtio_mmio_serial_ = std::make_unique<VirtioMmioDevice>();
@@ -369,7 +383,7 @@ bool Vm::SetupVirtioSerial() {
     addr_space_.AddMmioDevice(
         kVirtioSerialMmioBase, VirtioMmioDevice::kMmioSize, virtio_mmio_serial_.get());
 
-    LOG_INFO("VirtIO Serial device initialized for vdagent clipboard");
+    LOG_INFO("VirtIO Serial device initialized (vdagent + guest-agent)");
     return true;
 }
 
@@ -676,4 +690,14 @@ std::vector<std::string> Vm::GetSharedFolderTags() const {
         return {};
     }
     return virtio_fs_->GetShareTags();
+}
+
+bool Vm::IsGuestAgentConnected() const {
+    return guest_agent_handler_ && guest_agent_handler_->IsConnected();
+}
+
+void Vm::GuestAgentShutdown(const std::string& mode) {
+    if (guest_agent_handler_) {
+        guest_agent_handler_->Shutdown(mode);
+    }
 }

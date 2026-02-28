@@ -23,6 +23,7 @@ set(TENBOX_CORE_SOURCES
     ${CMAKE_SOURCE_DIR}/src/core/device/virtio/virtio_serial.cpp
     ${CMAKE_SOURCE_DIR}/src/core/device/virtio/virtio_fs.cpp
     ${CMAKE_SOURCE_DIR}/src/core/vdagent/vdagent_handler.cpp
+    ${CMAKE_SOURCE_DIR}/src/core/guest_agent/guest_agent_handler.cpp
     ${CMAKE_SOURCE_DIR}/src/core/net/net_backend.cpp
     ${CMAKE_SOURCE_DIR}/src/platform/windows/console/std_console_port.cpp
 )
