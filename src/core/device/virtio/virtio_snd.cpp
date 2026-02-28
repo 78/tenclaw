@@ -194,12 +194,13 @@ void VirtioSndDevice::ProcessTxQueue(VirtQueue& vq) {
             continue;
         }
 
-        std::vector<uint8_t> read_buf;
         VirtqChainElem* status_elem = nullptr;
 
+        // Measure total readable bytes and find the status element
+        size_t total_readable = 0;
         for (auto& elem : chain) {
             if (!elem.writable) {
-                read_buf.insert(read_buf.end(), elem.addr, elem.addr + elem.len);
+                total_readable += elem.len;
             } else {
                 if (!status_elem) status_elem = &elem;
             }
@@ -209,33 +210,39 @@ void VirtioSndDevice::ProcessTxQueue(VirtQueue& vq) {
         status.status = VIRTIO_SND_S_OK;
         status.latency_bytes = 0;
 
-        // Write status to the buffer
         if (status_elem && status_elem->len >= sizeof(VirtioSndPcmStatus)) {
             std::memcpy(status_elem->addr, &status, sizeof(status));
         }
 
-        // Extract PCM data and queue for later processing
         PendingTxBuffer pending{};
         pending.head = head;
         pending.status_len = sizeof(VirtioSndPcmStatus);
 
-        if (read_buf.size() > sizeof(VirtioSndPcmXfer) &&
+        // Copy PCM data directly from descriptor chain, skipping the xfer header
+        if (total_readable > sizeof(VirtioSndPcmXfer) &&
             pcm_format_ == VIRTIO_SND_PCM_FMT_S16) {
-            const uint8_t* pcm_data = read_buf.data() + sizeof(VirtioSndPcmXfer);
-            size_t pcm_size = read_buf.size() - sizeof(VirtioSndPcmXfer);
-            size_t sample_count = pcm_size / sizeof(int16_t);
-            pending.pcm_data.resize(sample_count);
-            std::memcpy(pending.pcm_data.data(), pcm_data, pcm_size);
+            size_t pcm_bytes = total_readable - sizeof(VirtioSndPcmXfer);
+            pending.pcm_data.resize(pcm_bytes / sizeof(int16_t));
+            auto* dst = reinterpret_cast<uint8_t*>(pending.pcm_data.data());
+            size_t skip = sizeof(VirtioSndPcmXfer);
+            for (auto& elem : chain) {
+                if (elem.writable) continue;
+                if (skip >= elem.len) {
+                    skip -= elem.len;
+                    continue;
+                }
+                size_t usable = elem.len - skip;
+                std::memcpy(dst, elem.addr + skip, usable);
+                dst += usable;
+                skip = 0;
+            }
         }
 
-        // Queue the buffer for later completion (timer will release at audio rate)
         {
             std::lock_guard<std::mutex> lock(tx_mutex_);
             pending_tx_buffers_.push_back(std::move(pending));
         }
     }
-    // Note: We do NOT call mmio_->NotifyUsedBuffer() here.
-    // The timer thread will do it when releasing buffers.
 }
 
 void VirtioSndDevice::HandlePcmInfo(const VirtioSndQueryInfo* query,
@@ -470,7 +477,7 @@ void VirtioSndDevice::PeriodTimerThread() {
             chunk.channels = channels;
             pcm_bytes = buf.pcm_data.size() * sizeof(int16_t);
             chunk.pcm = std::move(buf.pcm_data);
-            audio_port_->SubmitPcm(chunk);
+            audio_port_->SubmitPcm(std::move(chunk));
         }
 
         // Track audio position

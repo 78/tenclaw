@@ -97,6 +97,23 @@ void DisplayPanel::UpdateFrame(const DisplayFrame& frame) {
     }
 }
 
+void DisplayPanel::AdoptFramebuffer(uint32_t w, uint32_t h, const uint8_t* src, size_t len) {
+    std::lock_guard<std::mutex> lock(fb_mutex_);
+    size_t expected = static_cast<size_t>(w) * h * 4;
+    if (len < expected) return;
+
+    if (fb_width_ != w || fb_height_ != h) {
+        fb_width_ = w;
+        fb_height_ = h;
+        framebuffer_.resize(expected);
+    }
+    std::memcpy(framebuffer_.data(), src, expected);
+
+    if (hwnd_) {
+        InvalidateRect(hwnd_, nullptr, FALSE);
+    }
+}
+
 void DisplayPanel::RestoreFramebuffer(uint32_t w, uint32_t h, const std::vector<uint8_t>& pixels) {
     std::lock_guard<std::mutex> lock(fb_mutex_);
     fb_width_ = w;
@@ -257,13 +274,12 @@ void DisplayPanel::CalcDisplayRect(int cw, int ch, RECT* out) const {
         *out = {0, 0, cw, ch};
         return;
     }
-    double scale_x = static_cast<double>(cw) / fb_width_;
-    double scale_y = static_cast<double>(ch) / fb_height_;
-    double scale = (std::min)(scale_x, scale_y);
-    int dw = static_cast<int>(fb_width_ * scale);
-    int dh = static_cast<int>(fb_height_ * scale);
+    int dw = static_cast<int>(fb_width_);
+    int dh = static_cast<int>(fb_height_);
     int dx = (cw - dw) / 2;
     int dy = (ch - dh) / 2;
+    if (dx < 0) dx = 0;
+    if (dy < 0) dy = 0;
     *out = {dx, dy, dx + dw, dy + dh};
 }
 
@@ -282,7 +298,6 @@ void DisplayPanel::OnPaint() {
         BITMAPINFO bmi{};
         bmi.bmiHeader.biSize = sizeof(BITMAPINFOHEADER);
         bmi.bmiHeader.biWidth = static_cast<LONG>(fb_width_);
-        // Negative height = top-down DIB
         bmi.bmiHeader.biHeight = -static_cast<LONG>(fb_height_);
         bmi.bmiHeader.biPlanes = 1;
         bmi.bmiHeader.biBitCount = 32;
@@ -309,11 +324,12 @@ void DisplayPanel::OnPaint() {
             FillRect(hdc, &bar, black);
         }
 
-        SetStretchBltMode(hdc, HALFTONE);
-        StretchDIBits(hdc,
-            dst.left, dst.top, dst.right - dst.left, dst.bottom - dst.top,
-            0, 0, static_cast<int>(fb_width_), static_cast<int>(fb_height_),
-            framebuffer_.data(), &bmi, DIB_RGB_COLORS, SRCCOPY);
+        SetDIBitsToDevice(hdc,
+            dst.left, dst.top,
+            fb_width_, fb_height_,
+            0, 0,
+            0, fb_height_,
+            framebuffer_.data(), &bmi, DIB_RGB_COLORS);
     } else {
         HBRUSH black = reinterpret_cast<HBRUSH>(GetStockObject(BLACK_BRUSH));
         RECT fb_area = {0, 0, cw, ch};

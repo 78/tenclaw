@@ -6,6 +6,7 @@
 #include <thread>
 #include <atomic>
 #include <condition_variable>
+#include <vector>
 
 struct IAudioClient;
 struct IAudioRenderClient;
@@ -22,7 +23,7 @@ public:
 
     // Input: S16 stereo 48000Hz (fixed format matching virtio-snd config)
     void SubmitPcm(uint32_t sample_rate, uint16_t channels,
-                   const int16_t* data, size_t sample_count);
+                   std::vector<int16_t> samples);
 
     void Stop();
 

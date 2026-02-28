@@ -942,8 +942,8 @@ Win32UiShell::Win32UiShell(ManagerService& manager)
 
     // Wire callbacks
     manager_.SetDisplayCallback(
-        [this](const std::string& vm_id, const DisplayFrame& frame) {
-            InvokeOnUiThread([this, vm_id, frame]() {
+        [this](const std::string& vm_id, DisplayFrame frame) {
+            InvokeOnUiThread([this, vm_id, frame = std::move(frame)]() {
                 VmUiState& state = impl_->GetVmUiState(vm_id);
                 BlitFrameToState(state, frame);
 
@@ -951,7 +951,9 @@ Win32UiShell::Win32UiShell(ManagerService& manager)
                     impl_->selected_index < static_cast<int>(impl_->records.size()) &&
                     impl_->records[impl_->selected_index].spec.vm_id == vm_id);
                 if (is_current) {
-                    impl_->display_panel->UpdateFrame(frame);
+                    impl_->display_panel->AdoptFramebuffer(
+                        state.fb_width, state.fb_height,
+                        state.framebuffer.data(), state.framebuffer.size());
                 }
             });
         });
@@ -1012,11 +1014,11 @@ Win32UiShell::Win32UiShell(ManagerService& manager)
     });
 
     manager_.SetAudioPcmCallback(
-        [this](const std::string& vm_id, const AudioChunk& chunk) {
+        [this](const std::string& vm_id, AudioChunk chunk) {
             if (chunk.pcm.empty()) return;
             WasapiAudioPlayer& player = impl_->GetAudioPlayer(vm_id);
             player.SubmitPcm(chunk.sample_rate, chunk.channels,
-                             chunk.pcm.data(), chunk.pcm.size());
+                             std::move(chunk.pcm));
         });
 
     manager_.SetStateChangeCallback([this](const std::string& vm_id) {

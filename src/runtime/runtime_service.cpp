@@ -107,13 +107,13 @@ void ManagedInputPort::PushPointerEvent(const PointerEvent& ev) {
 
 // ── ManagedDisplayPort ───────────────────────────────────────────────
 
-void ManagedDisplayPort::SubmitFrame(const DisplayFrame& frame) {
-    std::function<void(const DisplayFrame&)> handler;
+void ManagedDisplayPort::SubmitFrame(DisplayFrame frame) {
+    std::function<void(DisplayFrame)> handler;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         handler = frame_handler_;
     }
-    if (handler) handler(frame);
+    if (handler) handler(std::move(frame));
 }
 
 void ManagedDisplayPort::SubmitCursor(const CursorInfo& cursor) {
@@ -126,7 +126,7 @@ void ManagedDisplayPort::SubmitCursor(const CursorInfo& cursor) {
 }
 
 void ManagedDisplayPort::SetFrameHandler(
-    std::function<void(const DisplayFrame&)> handler) {
+    std::function<void(DisplayFrame)> handler) {
     std::lock_guard<std::mutex> lock(mutex_);
     frame_handler_ = std::move(handler);
 }
@@ -171,16 +171,16 @@ void ManagedClipboardPort::SetEventHandler(std::function<void(const ClipboardEve
 
 // ── ManagedAudioPort ──────────────────────────────────────────────────
 
-void ManagedAudioPort::SubmitPcm(const AudioChunk& chunk) {
-    std::function<void(const AudioChunk&)> handler;
+void ManagedAudioPort::SubmitPcm(AudioChunk chunk) {
+    std::function<void(AudioChunk)> handler;
     {
         std::lock_guard<std::mutex> lock(mutex_);
         handler = pcm_handler_;
     }
-    if (handler) handler(chunk);
+    if (handler) handler(std::move(chunk));
 }
 
-void ManagedAudioPort::SetPcmHandler(std::function<void(const AudioChunk&)> handler) {
+void ManagedAudioPort::SetPcmHandler(std::function<void(AudioChunk)> handler) {
     std::lock_guard<std::mutex> lock(mutex_);
     pcm_handler_ = std::move(handler);
 }
@@ -221,7 +221,7 @@ RuntimeControlService::RuntimeControlService(std::string vm_id, std::string pipe
         send_cv_.notify_one();
     });
 
-    display_port_->SetFrameHandler([this](const DisplayFrame& frame) {
+    display_port_->SetFrameHandler([this](DisplayFrame frame) {
         ipc::Message event;
         event.kind = ipc::Kind::kEvent;
         event.channel = ipc::Channel::kDisplay;
@@ -236,7 +236,7 @@ RuntimeControlService::RuntimeControlService(std::string vm_id, std::string pipe
         event.fields["resource_height"] = std::to_string(frame.resource_height);
         event.fields["dirty_x"] = std::to_string(frame.dirty_x);
         event.fields["dirty_y"] = std::to_string(frame.dirty_y);
-        event.payload = frame.pixels;
+        event.payload = std::move(frame.pixels);
 
         std::string encoded = ipc::Encode(event);
         {
@@ -343,7 +343,7 @@ RuntimeControlService::RuntimeControlService(std::string vm_id, std::string pipe
         send_cv_.notify_one();
     });
 
-    audio_port_->SetPcmHandler([this](const AudioChunk& chunk) {
+    audio_port_->SetPcmHandler([this](AudioChunk chunk) {
         ipc::Message event;
         event.kind = ipc::Kind::kEvent;
         event.channel = ipc::Channel::kAudio;
@@ -352,9 +352,9 @@ RuntimeControlService::RuntimeControlService(std::string vm_id, std::string pipe
         event.request_id = next_event_id_++;
         event.fields["sample_rate"] = std::to_string(chunk.sample_rate);
         event.fields["channels"] = std::to_string(chunk.channels);
-        event.payload.resize(chunk.pcm.size() * sizeof(int16_t));
-        std::memcpy(event.payload.data(), chunk.pcm.data(),
-                     chunk.pcm.size() * sizeof(int16_t));
+        size_t byte_len = chunk.pcm.size() * sizeof(int16_t);
+        event.payload.resize(byte_len);
+        std::memcpy(event.payload.data(), chunk.pcm.data(), byte_len);
 
         std::string encoded = ipc::Encode(event);
         {

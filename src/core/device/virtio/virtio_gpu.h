@@ -157,7 +157,7 @@ static_assert(sizeof(VirtioGpuCtrlHdr) == 24);
 
 class VirtioGpuDevice : public VirtioDeviceOps {
 public:
-    using FrameCallback = std::function<void(const DisplayFrame&)>;
+    using FrameCallback = std::function<void(DisplayFrame)>;
     using CursorCallback = std::function<void(const CursorInfo&)>;
     using ScanoutStateCallback = std::function<void(bool active, uint32_t width, uint32_t height)>;
 
@@ -219,6 +219,8 @@ private:
 
     void WriteResponse(uint8_t* buf, uint32_t type, uint32_t* len);
     uint8_t* GpaToHva(uint64_t gpa) const;
+    void CopyFromBacking(const std::vector<GpuResource::BackingPage>& backing,
+                         uint64_t offset, uint32_t length, uint8_t* dst) const;
 
     VirtioMmioDevice* mmio_ = nullptr;
     GuestMemMap mem_{};

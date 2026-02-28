@@ -56,16 +56,16 @@ private:
 
 class ManagedDisplayPort final : public DisplayPort {
 public:
-    void SubmitFrame(const DisplayFrame& frame) override;
+    void SubmitFrame(DisplayFrame frame) override;
     void SubmitCursor(const CursorInfo& cursor) override;
     void SubmitScanoutState(bool active, uint32_t width, uint32_t height) override;
-    void SetFrameHandler(std::function<void(const DisplayFrame&)> handler);
+    void SetFrameHandler(std::function<void(DisplayFrame)> handler);
     void SetCursorHandler(std::function<void(const CursorInfo&)> handler);
     void SetStateHandler(std::function<void(bool, uint32_t, uint32_t)> handler);
 
 private:
     std::mutex mutex_;
-    std::function<void(const DisplayFrame&)> frame_handler_;
+    std::function<void(DisplayFrame)> frame_handler_;
     std::function<void(const CursorInfo&)> cursor_handler_;
     std::function<void(bool, uint32_t, uint32_t)> state_handler_;
 };
@@ -82,12 +82,12 @@ private:
 
 class ManagedAudioPort final : public AudioPort {
 public:
-    void SubmitPcm(const AudioChunk& chunk) override;
-    void SetPcmHandler(std::function<void(const AudioChunk&)> handler);
+    void SubmitPcm(AudioChunk chunk) override;
+    void SetPcmHandler(std::function<void(AudioChunk)> handler);
 
 private:
     std::mutex mutex_;
-    std::function<void(const AudioChunk&)> pcm_handler_;
+    std::function<void(AudioChunk)> pcm_handler_;
 };
 
 class RuntimeControlService {

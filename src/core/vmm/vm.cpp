@@ -334,8 +334,8 @@ bool Vm::SetupVirtioGpu(uint32_t width, uint32_t height) {
     virtio_gpu_->SetMemMap(mem_);
 
     if (display_port_) {
-        virtio_gpu_->SetFrameCallback([this](const DisplayFrame& frame) {
-            display_port_->SubmitFrame(frame);
+        virtio_gpu_->SetFrameCallback([this](DisplayFrame frame) {
+            display_port_->SubmitFrame(std::move(frame));
         });
         virtio_gpu_->SetCursorCallback([this](const CursorInfo& cursor) {
             display_port_->SubmitCursor(cursor);

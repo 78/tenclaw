@@ -30,15 +30,13 @@ void WasapiAudioPlayer::Stop() {
 }
 
 void WasapiAudioPlayer::SubmitPcm(uint32_t sample_rate, uint16_t channels,
-                                    const int16_t* data, size_t sample_count) {
-    if (!data || sample_count == 0 || channels == 0 || sample_rate == 0)
+                                    std::vector<int16_t> samples) {
+    if (samples.empty() || channels == 0 || sample_rate == 0)
         return;
 
     {
         std::lock_guard<std::mutex> lock(mutex_);
-        for (size_t i = 0; i < sample_count; ++i) {
-            pcm_buffer_.push_back(data[i]);
-        }
+        pcm_buffer_.insert(pcm_buffer_.end(), samples.begin(), samples.end());
         while (pcm_buffer_.size() > kMaxBufferedSamples) {
             pcm_buffer_.pop_front();
         }

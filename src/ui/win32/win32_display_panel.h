@@ -11,7 +11,7 @@
 #define WIN32_LEAN_AND_MEAN
 #include <windows.h>
 
-// A Win32 child window that renders a VM framebuffer via StretchDIBits.
+// A Win32 child window that renders a VM framebuffer 1:1 (centered).
 // When focused, captures keyboard and mouse input and forwards them to the VM.
 class DisplayPanel {
 public:
@@ -32,6 +32,10 @@ public:
     // Update the internal framebuffer with a dirty-rect frame.
     // Thread-safe; triggers InvalidateRect.
     void UpdateFrame(const DisplayFrame& frame);
+
+    // Adopt a pre-composited framebuffer (avoids redundant dirty-rect blit
+    // when the caller already maintains a full framebuffer).
+    void AdoptFramebuffer(uint32_t w, uint32_t h, const uint8_t* src, size_t len);
 
     // Restore framebuffer from cached state (e.g. when switching back to a VM).
     void RestoreFramebuffer(uint32_t w, uint32_t h, const std::vector<uint8_t>& pixels);

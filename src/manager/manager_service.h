@@ -108,7 +108,7 @@ public:
     using StateChangeCallback = std::function<void(const std::string& vm_id)>;
     void SetStateChangeCallback(StateChangeCallback cb);
 
-    using DisplayCallback = std::function<void(const std::string& vm_id, const DisplayFrame& frame)>;
+    using DisplayCallback = std::function<void(const std::string& vm_id, DisplayFrame frame)>;
     void SetDisplayCallback(DisplayCallback cb);
 
     using CursorCallback = std::function<void(const std::string& vm_id, const CursorInfo& cursor)>;
@@ -131,7 +131,7 @@ public:
 
     // Audio PCM callback: audio data from VM to host
     using AudioPcmCallback = std::function<void(const std::string& vm_id,
-        const AudioChunk& chunk)>;
+        AudioChunk chunk)>;
     void SetAudioPcmCallback(AudioPcmCallback cb);
 
     // Guest Agent state callback

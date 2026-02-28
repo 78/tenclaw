@@ -84,6 +84,31 @@ uint8_t* VirtioGpuDevice::GpaToHva(uint64_t gpa) const {
     return nullptr;
 }
 
+void VirtioGpuDevice::CopyFromBacking(
+    const std::vector<GpuResource::BackingPage>& backing,
+    uint64_t offset, uint32_t length, uint8_t* dst) const {
+    uint64_t page_start = 0;
+    for (auto& page : backing) {
+        if (length == 0) break;
+        uint64_t page_end = page_start + page.length;
+        if (offset < page_end) {
+            uint64_t skip = offset - page_start;
+            uint32_t avail = static_cast<uint32_t>(page.length - skip);
+            uint32_t n = (std::min)(avail, length);
+            uint8_t* hva = GpaToHva(page.gpa + skip);
+            if (hva) {
+                std::memcpy(dst, hva, n);
+            } else {
+                std::memset(dst, 0, n);
+            }
+            dst += n;
+            offset += n;
+            length -= n;
+        }
+        page_start = page_end;
+    }
+}
+
 void VirtioGpuDevice::ProcessControlQueue(VirtQueue& vq) {
     uint16_t head;
     while (vq.PopAvail(&head)) {
@@ -377,7 +402,6 @@ void VirtioGpuDevice::CmdTransferToHost2d(const uint8_t* req, uint32_t req_len,
     uint32_t bpp = FormatBpp(res.format);
     uint32_t stride = res.width * bpp;
 
-    // Linearize the backing pages into the host pixel buffer
     // The transfer rectangle specifies which region to copy.
     uint32_t rx = cmd->r.x;
     uint32_t ry = cmd->r.y;
@@ -391,18 +415,12 @@ void VirtioGpuDevice::CmdTransferToHost2d(const uint8_t* req, uint32_t req_len,
     if (rx + rw > res.width) rw = res.width - rx;
     if (ry + rh > res.height) rh = res.height - ry;
 
-    // Build a linear view of all backing pages
-    std::vector<uint8_t> linear;
-    for (auto& page : res.backing) {
-        uint8_t* hva = GpaToHva(page.gpa);
-        if (hva) {
-            linear.insert(linear.end(), hva, hva + page.length);
-        } else {
-            linear.resize(linear.size() + page.length, 0);
-        }
-    }
+    // Compute total backing size for bounds checking
+    uint64_t total_backing = 0;
+    for (auto& page : res.backing) total_backing += page.length;
 
-    // Copy the requested rectangle from the linear backing to host_pixels
+    // Copy each row directly from backing pages into host_pixels,
+    // avoiding a full linearization into a temporary buffer.
     uint64_t src_offset = cmd->offset;
     for (uint32_t row = 0; row < rh; ++row) {
         uint64_t src_row_off = src_offset + static_cast<uint64_t>(row) * stride;
@@ -410,12 +428,11 @@ void VirtioGpuDevice::CmdTransferToHost2d(const uint8_t* req, uint32_t req_len,
                            (static_cast<uint64_t>(rx) * bpp);
         uint32_t row_bytes = rw * bpp;
 
-        if (src_row_off + row_bytes > linear.size()) break;
+        if (src_row_off + row_bytes > total_backing) break;
         if (dst_off + row_bytes > res.host_pixels.size()) break;
 
-        std::memcpy(res.host_pixels.data() + dst_off,
-                    linear.data() + src_row_off,
-                    row_bytes);
+        CopyFromBacking(res.backing, src_row_off, row_bytes,
+                        res.host_pixels.data() + dst_off);
     }
 
     WriteResponse(resp, VIRTIO_GPU_RESP_OK_NODATA, resp_len);
@@ -453,27 +470,33 @@ void VirtioGpuDevice::CmdResourceFlush(const uint8_t* req, uint32_t req_len,
         if (dy + dh > res.height) dh = res.height - dy;
 
         DisplayFrame frame;
-        frame.width = dw;
-        frame.height = dh;
-        frame.stride = dw * bpp;
         frame.format = res.format;
         frame.resource_width = res.width;
         frame.resource_height = res.height;
         frame.dirty_x = dx;
         frame.dirty_y = dy;
-        frame.pixels.resize(static_cast<size_t>(dw) * dh * bpp);
+        frame.width = dw;
+        frame.height = dh;
+        frame.stride = dw * bpp;
 
-        for (uint32_t row = 0; row < dh; ++row) {
-            uint64_t src = (static_cast<uint64_t>(dy + row) * full_stride) +
-                           (static_cast<uint64_t>(dx) * bpp);
-            uint64_t dst = static_cast<uint64_t>(row) * dw * bpp;
-            if (src + dw * bpp > res.host_pixels.size()) break;
-            std::memcpy(frame.pixels.data() + dst,
-                        res.host_pixels.data() + src,
-                        dw * bpp);
+        bool full_frame = (dx == 0 && dy == 0 &&
+                           dw == res.width && dh == res.height);
+        if (full_frame) {
+            frame.pixels = res.host_pixels;
+        } else {
+            frame.pixels.resize(static_cast<size_t>(dw) * dh * bpp);
+            for (uint32_t row = 0; row < dh; ++row) {
+                uint64_t src = (static_cast<uint64_t>(dy + row) * full_stride) +
+                               (static_cast<uint64_t>(dx) * bpp);
+                uint64_t dst = static_cast<uint64_t>(row) * dw * bpp;
+                if (src + dw * bpp > res.host_pixels.size()) break;
+                std::memcpy(frame.pixels.data() + dst,
+                            res.host_pixels.data() + src,
+                            dw * bpp);
+            }
         }
 
-        frame_callback_(frame);
+        frame_callback_(std::move(frame));
     }
 
     WriteResponse(resp, VIRTIO_GPU_RESP_OK_NODATA, resp_len);

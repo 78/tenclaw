@@ -60,7 +60,7 @@ struct CursorInfo {
 class DisplayPort {
 public:
     virtual ~DisplayPort() = default;
-    virtual void SubmitFrame(const DisplayFrame& frame) = 0;
+    virtual void SubmitFrame(DisplayFrame frame) = 0;
     virtual void SubmitCursor(const CursorInfo& cursor) = 0;
     virtual void SubmitScanoutState(bool active, uint32_t width, uint32_t height) = 0;
 };
@@ -74,7 +74,7 @@ struct AudioChunk {
 class AudioPort {
 public:
     virtual ~AudioPort() = default;
-    virtual void SubmitPcm(const AudioChunk& chunk) = 0;
+    virtual void SubmitPcm(AudioChunk chunk) = 0;
 };
 
 enum class ControlCommandType : uint32_t {
