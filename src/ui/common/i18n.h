@@ -108,6 +108,8 @@ enum class S {
     kConfirmDeleteMsg,
     kConfirmExitTitle,
     kConfirmExitMsg,
+    kConfirmForceStopTitle,
+    kConfirmForceStopMsg,
 
     // Errors & misc
     kError,

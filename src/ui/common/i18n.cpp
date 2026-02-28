@@ -72,6 +72,8 @@ static const char* kStringsEn[] = {
     "Are you sure you want to delete '%s'?\nThis will remove all VM files permanently.",  // kConfirmDeleteMsg
     "Confirm Exit",                      // kConfirmExitTitle
     "%u VM(s) still running. Are you sure you want to exit?\n\nAll running VMs will be forcibly terminated.",  // kConfirmExitMsg
+    "Force Stop VM",                     // kConfirmForceStopTitle
+    "Are you sure you want to force stop '%s'?\n\nThis will immediately terminate the VM without graceful shutdown. Any unsaved data may be lost.",  // kConfirmForceStopMsg
     "Error",                             // kError
     "Validation Error",                  // kValidationError
     "Send",                              // kSend
@@ -162,6 +164,8 @@ static const char* kStringsZhCN[] = {
     "确认删除 '%s' 吗？\n此操作将永久删除该虚拟机的所有文件。",  // kConfirmDeleteMsg
     "确认退出",                          // kConfirmExitTitle
     "仍有 %u 个虚拟机在运行。确认退出吗？\n\n所有正在运行的虚拟机将被强制终止。",  // kConfirmExitMsg
+    "强制停止",                          // kConfirmForceStopTitle
+    "确认强制停止 '%s' 吗？\n\n此操作将立即终止虚拟机而不进行正常关机，未保存的数据可能会丢失。",  // kConfirmForceStopMsg
     "错误",                              // kError
     "验证错误",                          // kValidationError
     "发送",                              // kSend

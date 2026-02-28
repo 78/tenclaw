@@ -317,8 +317,6 @@ static constexpr int kTabConsole  = 1;
 static constexpr int kTabDisplay  = 2;
 static constexpr int kTabSharedFs = 3;
 
-static constexpr int kDisplayHintBarHeight = 20;
-
 // Resize window to fit VM display at 1:1 pixel ratio
 static void ResizeWindowForDisplay(Impl* p, uint32_t vm_width, uint32_t vm_height) {
     if (!p->hwnd || vm_width == 0 || vm_height == 0) return;
@@ -342,7 +340,7 @@ static void ResizeWindowForDisplay(Impl* p, uint32_t vm_width, uint32_t vm_heigh
     int tab_extra_h = tab_padding.bottom - tab_padding.top - 100;
 
     int target_cw = kLeftPaneWidth + 2 + tab_extra_w + static_cast<int>(vm_width);
-    int target_ch = tb_h + tab_extra_h + static_cast<int>(vm_height) + kDisplayHintBarHeight + sb_h;
+    int target_ch = tb_h + tab_extra_h + static_cast<int>(vm_height) + sb_h;
 
     RECT wr = {0, 0, target_cw, target_ch};
     DWORD style = static_cast<DWORD>(GetWindowLongPtr(p->hwnd, GWL_STYLE));
@@ -441,8 +439,7 @@ static void LayoutControls(Impl* p) {
             p->display_panel->SetBounds(px, py, pw, ph);
 
             uint32_t disp_w = pw > 0 ? (static_cast<uint32_t>(pw) & ~7u) : 0;
-            uint32_t disp_h = ph > kDisplayHintBarHeight
-                ? static_cast<uint32_t>(ph - kDisplayHintBarHeight) : 0;
+            uint32_t disp_h = ph > 0 ? static_cast<uint32_t>(ph) : 0;
 
             if (p->display_available && disp_w > 0 && disp_h > 0 &&
                 (disp_w != p->last_sent_display_w || disp_h != p->last_sent_display_h)) {
@@ -640,6 +637,12 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
                 p->selected_index >= static_cast<int>(p->records.size()))
                 break;
             std::string vm_id = p->records[p->selected_index].spec.vm_id;
+            std::string vm_name = p->records[p->selected_index].spec.name;
+            auto prompt = i18n::fmt(i18n::S::kConfirmForceStopMsg, vm_name.c_str());
+            if (MessageBoxA(hwnd, prompt.c_str(), i18n::tr(i18n::S::kConfirmForceStopTitle),
+                    MB_YESNO | MB_ICONWARNING | MB_DEFBUTTON2) != IDYES) {
+                return 0;
+            }
             std::string error;
             bool ok = shell->manager_.StopVm(vm_id, &error);
             shell->RefreshVmList();

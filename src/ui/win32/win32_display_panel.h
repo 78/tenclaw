@@ -82,6 +82,13 @@ private:
     uint32_t last_sent_buttons_ = 0;
     static constexpr DWORD kPointerMinIntervalMs = 20;
 
+    // Capture hint: show once per process, auto-hide after 3 seconds
+    DWORD capture_hint_start_ = 0;
+    bool capture_hint_visible_ = false;
+    bool hint_shown_once_ = false;
+    static constexpr UINT_PTR kHintTimerId = 42;
+    static constexpr DWORD kHintDurationMs = 3000;
+
     // Host-side framebuffer (full resource size)
     std::mutex fb_mutex_;
     uint32_t fb_width_ = 0;

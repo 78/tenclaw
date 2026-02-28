@@ -426,18 +426,18 @@ bool RuntimeControlService::Start() {
                     console_queue_.pop_front();
                 }
 
+                // Send audio PCM chunks (latency-sensitive).
+                size_t audio_to_send = audio_queue_.size();
+                while (audio_to_send-- > 0 && !audio_queue_.empty()) {
+                    batch += std::move(audio_queue_.front());
+                    audio_queue_.pop_front();
+                }
+
                 // Send display frames (bounded to avoid blocking too long).
                 size_t frames_to_send = frame_queue_.size();
                 while (frames_to_send-- > 0 && !frame_queue_.empty()) {
                     batch += std::move(frame_queue_.front());
                     frame_queue_.pop_front();
-                }
-
-                // Send audio PCM chunks.
-                size_t audio_to_send = audio_queue_.size();
-                while (audio_to_send-- > 0 && !audio_queue_.empty()) {
-                    batch += std::move(audio_queue_.front());
-                    audio_queue_.pop_front();
                 }
             }
 

@@ -126,6 +126,7 @@ STEPS=(
     "apt_update"
     "install_xfce"
     "install_spice"
+    "install_guest_agent"
     "install_chrome"
     "config_chrome"
     "install_devtools"
@@ -139,6 +140,7 @@ STEPS=(
     "config_network"
     "config_virtiofs"
     "config_spice"
+    "config_guest_agent"
     "verify_install"
     "cleanup_chroot"
     "unmount_image"
@@ -154,6 +156,7 @@ STEP_DESCRIPTIONS=(
     "Update apt sources"
     "Install XFCE desktop"
     "Install SPICE vdagent"
+    "Install Guest Agent"
     "Install Google Chrome"
     "Configure Chrome"
     "Install development tools"
@@ -167,6 +170,7 @@ STEP_DESCRIPTIONS=(
     "Configure network"
     "Configure virtio-fs"
     "Configure SPICE"
+    "Configure Guest Agent"
     "Verify installation"
     "Cleanup chroot"
     "Unmount image"
@@ -429,7 +433,7 @@ EOF
 do_install_xfce() {
     sudo chroot "$MOUNT_DIR" /bin/bash -e << 'EOF'
 # Check if already installed
-if dpkg -l xfce4 &>/dev/null; then
+if dpkg -s xfce4 &>/dev/null; then
     echo "  XFCE already installed"
     exit 0
 fi
@@ -447,7 +451,7 @@ EOF
 
 do_install_spice() {
     sudo chroot "$MOUNT_DIR" /bin/bash -e << 'EOF'
-if dpkg -l spice-vdagent &>/dev/null; then
+if dpkg -s spice-vdagent &>/dev/null; then
     echo "  SPICE vdagent already installed"
     exit 0
 fi
@@ -457,7 +461,7 @@ EOF
 
 do_install_guest_agent() {
     sudo chroot "$MOUNT_DIR" /bin/bash -e << 'EOF'
-if dpkg -l qemu-guest-agent &>/dev/null; then
+if dpkg -s qemu-guest-agent &>/dev/null; then
     echo "  qemu-guest-agent already installed"
     exit 0
 fi
@@ -505,7 +509,7 @@ do_install_chrome() {
     sudo cp "$CACHE_CHROME" "$MOUNT_DIR/tmp/chrome.deb"
     
     sudo chroot "$MOUNT_DIR" /bin/bash -e << 'EOF'
-if dpkg -l google-chrome-stable &>/dev/null; then
+if dpkg -s google-chrome-stable &>/dev/null; then
     echo "  Chrome already installed"
     rm -f /tmp/chrome.deb
     exit 0
@@ -565,7 +569,7 @@ EOF
 
 do_install_devtools() {
     sudo chroot "$MOUNT_DIR" /bin/bash -e << 'EOF'
-if dpkg -l python3 g++ cmake &>/dev/null; then
+if dpkg -s python3 &>/dev/null && dpkg -s g++ &>/dev/null && dpkg -s cmake &>/dev/null; then
     echo "  Dev tools already installed"
     exit 0
 fi
@@ -579,7 +583,7 @@ EOF
 
 do_install_usertools() {
     sudo chroot "$MOUNT_DIR" /bin/bash -e << 'EOF'
-if dpkg -l mousepad &>/dev/null; then
+if dpkg -s mousepad &>/dev/null; then
     echo "  User tools already installed"
     exit 0
 fi
@@ -595,7 +599,7 @@ EOF
 
 do_install_audio() {
     sudo chroot "$MOUNT_DIR" /bin/bash -e << 'EOF'
-if dpkg -l pulseaudio &>/dev/null; then
+if dpkg -s pulseaudio &>/dev/null && dpkg -s pavucontrol &>/dev/null; then
     echo "  Audio packages already installed"
     exit 0
 fi

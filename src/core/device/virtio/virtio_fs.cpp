@@ -3,6 +3,24 @@
 #include <algorithm>
 #include <cstring>
 
+static std::wstring Utf8ToWide(const std::string& utf8) {
+    if (utf8.empty()) return {};
+    int len = MultiByteToWideChar(CP_UTF8, 0, utf8.data(), (int)utf8.size(), nullptr, 0);
+    if (len <= 0) return {};
+    std::wstring wide(len, L'\0');
+    MultiByteToWideChar(CP_UTF8, 0, utf8.data(), (int)utf8.size(), wide.data(), len);
+    return wide;
+}
+
+static std::string WideToUtf8(const std::wstring& wide) {
+    if (wide.empty()) return {};
+    int len = WideCharToMultiByte(CP_UTF8, 0, wide.data(), (int)wide.size(), nullptr, 0, nullptr, nullptr);
+    if (len <= 0) return {};
+    std::string utf8(len, '\0');
+    WideCharToMultiByte(CP_UTF8, 0, wide.data(), (int)wide.size(), utf8.data(), len, nullptr, nullptr);
+    return utf8;
+}
+
 // Virtual root inode number
 constexpr uint64_t VIRTUAL_ROOT_INODE = 1;
 
@@ -47,7 +65,7 @@ bool VirtioFsDevice::AddShare(const std::string& tag, const std::string& host_pa
 
     // Validate host path exists
     std::string path = host_path;
-    DWORD attrs = GetFileAttributesA(path.c_str());
+    DWORD attrs = GetFileAttributesW(Utf8ToWide(path).c_str());
     if (attrs == INVALID_FILE_ATTRIBUTES || !(attrs & FILE_ATTRIBUTE_DIRECTORY)) {
         LOG_ERROR("VirtIO FS: host path '%s' is not a valid directory", host_path.c_str());
         return false;
@@ -408,7 +426,7 @@ void VirtioFsDevice::HandleLookup(const FuseInHeader* in_hdr, const uint8_t* in_
     const InodeInfo& parent = inode_it->second;
     std::string child_path = parent.host_path + "\\" + name;
     
-    DWORD attrs = GetFileAttributesA(child_path.c_str());
+    DWORD attrs = GetFileAttributesW(Utf8ToWide(child_path).c_str());
     if (attrs == INVALID_FILE_ATTRIBUTES) {
         WriteErrorResponse(out_buf, in_hdr->unique, WindowsErrorToFuse(GetLastError()));
         return;
@@ -569,7 +587,7 @@ void VirtioFsDevice::HandleSetAttr(const FuseInHeader* in_hdr, const uint8_t* in
 
     // Handle size truncation
     if (setattr_in->valid & FATTR_SIZE) {
-        HANDLE h = CreateFileA(path.c_str(), GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
+        HANDLE h = CreateFileW(Utf8ToWide(path).c_str(), GENERIC_WRITE, FILE_SHARE_READ | FILE_SHARE_WRITE,
                                nullptr, OPEN_EXISTING, FILE_ATTRIBUTE_NORMAL, nullptr);
         if (h != INVALID_HANDLE_VALUE) {
             LARGE_INTEGER li;
@@ -582,7 +600,7 @@ void VirtioFsDevice::HandleSetAttr(const FuseInHeader* in_hdr, const uint8_t* in
 
     // Handle time updates
     if ((setattr_in->valid & FATTR_ATIME) || (setattr_in->valid & FATTR_MTIME)) {
-        HANDLE h = CreateFileA(path.c_str(), FILE_WRITE_ATTRIBUTES, 
+        HANDLE h = CreateFileW(Utf8ToWide(path).c_str(), FILE_WRITE_ATTRIBUTES, 
                                FILE_SHARE_READ | FILE_SHARE_WRITE,
                                nullptr, OPEN_EXISTING, FILE_FLAG_BACKUP_SEMANTICS, nullptr);
         if (h != INVALID_HANDLE_VALUE) {
@@ -644,7 +662,7 @@ void VirtioFsDevice::HandleOpen(const FuseInHeader* in_hdr, const uint8_t* in_da
         access = GENERIC_READ | GENERIC_WRITE;
     }
 
-    HANDLE h = CreateFileA(path.c_str(), access, share, nullptr, disposition,
+    HANDLE h = CreateFileW(Utf8ToWide(path).c_str(), access, share, nullptr, disposition,
                            FILE_ATTRIBUTE_NORMAL, nullptr);
     if (h == INVALID_HANDLE_VALUE) {
         WriteErrorResponse(out_buf, in_hdr->unique, WindowsErrorToFuse(GetLastError()));
@@ -781,7 +799,7 @@ void VirtioFsDevice::HandleOpenDir(const FuseInHeader* in_hdr, const uint8_t*,
         path = it->second.host_path;
         share_tag = it->second.share_tag;
 
-        DWORD attrs = GetFileAttributesA(path.c_str());
+        DWORD attrs = GetFileAttributesW(Utf8ToWide(path).c_str());
         if (attrs == INVALID_FILE_ATTRIBUTES) {
             WriteErrorResponse(out_buf, in_hdr->unique, WindowsErrorToFuse(GetLastError()));
             return;
@@ -856,18 +874,17 @@ void VirtioFsDevice::HandleReadDir(const FuseInHeader* in_hdr, const uint8_t* in
         }
     } else {
         // Real directory
-        std::string search_path = fh->path + "\\*";
+        std::wstring search_path = Utf8ToWide(fh->path + "\\*");
         
-        WIN32_FIND_DATAA fdata;
-        HANDLE hFind = FindFirstFileA(search_path.c_str(), &fdata);
+        WIN32_FIND_DATAW fdata;
+        HANDLE hFind = FindFirstFileW(search_path.c_str(), &fdata);
         if (hFind == INVALID_HANDLE_VALUE) {
             WriteErrorResponse(out_buf, in_hdr->unique, WindowsErrorToFuse(GetLastError()));
             return;
         }
 
         do {
-            std::string name_w = fdata.cFileName;
-            std::string name = name_w;
+            std::string name = WideToUtf8(fdata.cFileName);
             
             if (entry_offset < read_in->offset) {
                 entry_offset++;
@@ -885,7 +902,7 @@ void VirtioFsDevice::HandleReadDir(const FuseInHeader* in_hdr, const uint8_t* in
             FuseDirent dirent;
             memset(&dirent, 0, sizeof(dirent));
             
-            std::string full_path = fh->path + "\\" + name_w;
+            std::string full_path = fh->path + "\\" + name;
             bool is_dir = (fdata.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
             
             // Get or create inode
@@ -916,7 +933,7 @@ void VirtioFsDevice::HandleReadDir(const FuseInHeader* in_hdr, const uint8_t* in
             memcpy(dir_buf.data() + old_size + sizeof(dirent), name.c_str(), name_len);
 
             entry_offset++;
-        } while (FindNextFileA(hFind, &fdata));
+        } while (FindNextFileW(hFind, &fdata));
 
         FindClose(hFind);
     }
@@ -987,7 +1004,7 @@ void VirtioFsDevice::HandleReadDirPlus(const FuseInHeader* in_hdr, const uint8_t
         }
     } else {
         // Real directory
-        std::string search_path = fh->path + "\\*";
+        std::wstring search_path = Utf8ToWide(fh->path + "\\*");
 
         bool share_readonly = false;
         {
@@ -995,16 +1012,15 @@ void VirtioFsDevice::HandleReadDirPlus(const FuseInHeader* in_hdr, const uint8_t
             if (sit != shares_.end()) share_readonly = sit->second.readonly;
         }
         
-        WIN32_FIND_DATAA fdata;
-        HANDLE hFind = FindFirstFileA(search_path.c_str(), &fdata);
+        WIN32_FIND_DATAW fdata;
+        HANDLE hFind = FindFirstFileW(search_path.c_str(), &fdata);
         if (hFind == INVALID_HANDLE_VALUE) {
             WriteErrorResponse(out_buf, in_hdr->unique, WindowsErrorToFuse(GetLastError()));
             return;
         }
 
         do {
-            std::string name_w = fdata.cFileName;
-            std::string name = name_w;
+            std::string name = WideToUtf8(fdata.cFileName);
             
             if (entry_offset < read_in->offset) {
                 entry_offset++;
@@ -1019,7 +1035,7 @@ void VirtioFsDevice::HandleReadDirPlus(const FuseInHeader* in_hdr, const uint8_t
                 break;
             }
 
-            std::string full_path = fh->path + "\\" + name_w;
+            std::string full_path = fh->path + "\\" + name;
             bool is_dir = (fdata.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY) != 0;
             
             // Get or create inode
@@ -1059,7 +1075,7 @@ void VirtioFsDevice::HandleReadDirPlus(const FuseInHeader* in_hdr, const uint8_t
             memcpy(dir_buf.data() + old_size + sizeof(direntplus), name.c_str(), name_len);
 
             entry_offset++;
-        } while (FindNextFileA(hFind, &fdata));
+        } while (FindNextFileW(hFind, &fdata));
 
         FindClose(hFind);
     }
@@ -1098,7 +1114,7 @@ void VirtioFsDevice::HandleStatFs(const FuseInHeader* in_hdr, std::vector<uint8_
     // Try to get stats from the first share, or aggregate
     for (const auto& [tag, share] : shares_) {
         ULARGE_INTEGER free_bytes, total_bytes, total_free;
-        if (GetDiskFreeSpaceExA(share.host_path.c_str(), &free_bytes, &total_bytes, &total_free)) {
+        if (GetDiskFreeSpaceExW(Utf8ToWide(share.host_path).c_str(), &free_bytes, &total_bytes, &total_free)) {
             if (!got_stats) {
                 total_blocks = total_bytes.QuadPart / block_size;
                 free_blocks = total_free.QuadPart / block_size;
@@ -1163,7 +1179,7 @@ void VirtioFsDevice::HandleCreate(const FuseInHeader* in_hdr, const uint8_t* in_
     DWORD access = GENERIC_READ | GENERIC_WRITE;
     DWORD share = FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE;
     
-    HANDLE h = CreateFileA(file_path.c_str(), access, share, nullptr, 
+    HANDLE h = CreateFileW(Utf8ToWide(file_path).c_str(), access, share, nullptr, 
                            CREATE_NEW, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (h == INVALID_HANDLE_VALUE) {
         WriteErrorResponse(out_buf, in_hdr->unique, WindowsErrorToFuse(GetLastError()));
@@ -1222,7 +1238,7 @@ void VirtioFsDevice::HandleMkdir(const FuseInHeader* in_hdr, const uint8_t* in_d
 
     std::string dir_path = parent_path + "\\" + std::string(name, name_len);
 
-    if (!CreateDirectoryA(dir_path.c_str(), nullptr)) {
+    if (!CreateDirectoryW(Utf8ToWide(dir_path).c_str(), nullptr)) {
         WriteErrorResponse(out_buf, in_hdr->unique, WindowsErrorToFuse(GetLastError()));
         return;
     }
@@ -1273,7 +1289,7 @@ void VirtioFsDevice::HandleUnlink(const FuseInHeader* in_hdr, const uint8_t* in_
 
     std::string file_path = parent_path + "\\" + name;
 
-    if (!DeleteFileA(file_path.c_str())) {
+    if (!DeleteFileW(Utf8ToWide(file_path).c_str())) {
         WriteErrorResponse(out_buf, in_hdr->unique, WindowsErrorToFuse(GetLastError()));
         return;
     }
@@ -1307,7 +1323,7 @@ void VirtioFsDevice::HandleRmdir(const FuseInHeader* in_hdr, const uint8_t* in_d
 
     std::string dir_path = parent_path + "\\" + name;
 
-    if (!RemoveDirectoryA(dir_path.c_str())) {
+    if (!RemoveDirectoryW(Utf8ToWide(dir_path).c_str())) {
         WriteErrorResponse(out_buf, in_hdr->unique, WindowsErrorToFuse(GetLastError()));
         return;
     }
@@ -1358,7 +1374,7 @@ void VirtioFsDevice::HandleRename(const FuseInHeader* in_hdr, const uint8_t* in_
     std::string old_path = old_parent_path + "\\" + old_name;
     std::string new_path = new_parent_path + "\\" + new_name;
 
-    if (!MoveFileExA(old_path.c_str(), new_path.c_str(), MOVEFILE_REPLACE_EXISTING)) {
+    if (!MoveFileExW(Utf8ToWide(old_path).c_str(), Utf8ToWide(new_path).c_str(), MOVEFILE_REPLACE_EXISTING)) {
         WriteErrorResponse(out_buf, in_hdr->unique, WindowsErrorToFuse(GetLastError()));
         return;
     }
@@ -1384,7 +1400,7 @@ void VirtioFsDevice::HandleFsync(const FuseInHeader*, const uint8_t* in_data) {
 
 int32_t VirtioFsDevice::FillAttr(const std::string& path, FuseAttr* attr, uint64_t inode, bool share_readonly) {
     WIN32_FILE_ATTRIBUTE_DATA fad;
-    if (!GetFileAttributesExA(path.c_str(), GetFileExInfoStandard, &fad)) {
+    if (!GetFileAttributesExW(Utf8ToWide(path).c_str(), GetFileExInfoStandard, &fad)) {
         return WindowsErrorToFuse(GetLastError());
     }
 

@@ -47,7 +47,7 @@ private:
     static constexpr uint64_t kCopiedBit     = 1ULL << 63;
     // Mask to extract the host offset from L1/L2 entries (bits 9..55)
     static constexpr uint64_t kOffsetMask    = 0x00FFFFFFFFFFFE00ULL;
-    static constexpr size_t   kL2CacheMax    = 16;
+    static constexpr size_t   kL2CacheMax    = 64;
 
     static uint16_t Be16(uint16_t v);
     static uint32_t Be32(uint32_t v);

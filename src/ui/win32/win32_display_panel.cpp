@@ -290,8 +290,7 @@ void DisplayPanel::OnPaint() {
     RECT rc;
     GetClientRect(hwnd_, &rc);
     int cw = rc.right;
-    int ch = rc.bottom - kHintBarHeight;
-    if (ch < 0) ch = 0;
+    int ch = rc.bottom;
 
     std::lock_guard<std::mutex> lock(fb_mutex_);
     if (fb_width_ > 0 && fb_height_ > 0 && !framebuffer_.empty()) {
@@ -336,22 +335,43 @@ void DisplayPanel::OnPaint() {
         FillRect(hdc, &fb_area, black);
     }
 
-    // Draw hint bar at bottom
-    RECT hint_rc = {0, ch, rc.right, rc.bottom};
-    COLORREF bg_color = captured_ ? RGB(0, 100, 180) : RGB(48, 48, 48);
-    HBRUSH bg_brush = CreateSolidBrush(bg_color);
-    FillRect(hdc, &hint_rc, bg_brush);
-    DeleteObject(bg_brush);
+    // Overlay a compact hint pill at top-center
+    if (captured_ && capture_hint_visible_) {
+        const char* hint = i18n::tr(i18n::S::kDisplayHintCaptured);
+        std::wstring hint_w = i18n::to_wide(hint);
 
-    SetBkMode(hdc, TRANSPARENT);
-    COLORREF text_color = captured_ ? RGB(255, 255, 255) : RGB(200, 200, 200);
-    SetTextColor(hdc, text_color);
-    const char* hint = captured_
-        ? i18n::tr(i18n::S::kDisplayHintCaptured)
-        : i18n::tr(i18n::S::kDisplayHintNormal);
-    std::wstring hint_w = i18n::to_wide(hint);
-    DrawTextW(hdc, hint_w.c_str(), -1, &hint_rc,
-        DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        HFONT font = static_cast<HFONT>(GetStockObject(DEFAULT_GUI_FONT));
+        HFONT old_font = static_cast<HFONT>(SelectObject(hdc, font));
+        SIZE text_sz{};
+        GetTextExtentPoint32W(hdc, hint_w.c_str(),
+            static_cast<int>(hint_w.size()), &text_sz);
+        SelectObject(hdc, old_font);
+
+        int pad_x = 12;
+        int pad_y = 4;
+        int pill_w = text_sz.cx + pad_x * 2;
+        int pill_h = text_sz.cy + pad_y * 2;
+        int pill_x = (rc.right - pill_w) / 2;
+        int pill_y = 6;
+
+        RECT pill_rc = {pill_x, pill_y, pill_x + pill_w, pill_y + pill_h};
+        HBRUSH bg_brush = CreateSolidBrush(RGB(48, 48, 48));
+        HPEN null_pen = static_cast<HPEN>(GetStockObject(NULL_PEN));
+        HBRUSH old_brush = static_cast<HBRUSH>(SelectObject(hdc, bg_brush));
+        HPEN old_pen = static_cast<HPEN>(SelectObject(hdc, null_pen));
+        RoundRect(hdc, pill_rc.left, pill_rc.top,
+            pill_rc.right + 1, pill_rc.bottom + 1, 8, 8);
+        SelectObject(hdc, old_brush);
+        SelectObject(hdc, old_pen);
+        DeleteObject(bg_brush);
+
+        SetBkMode(hdc, TRANSPARENT);
+        SetTextColor(hdc, RGB(255, 255, 255));
+        old_font = static_cast<HFONT>(SelectObject(hdc, font));
+        DrawTextW(hdc, hint_w.c_str(), -1, &pill_rc,
+            DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+        SelectObject(hdc, old_font);
+    }
 
     EndPaint(hwnd_, &ps);
 }
@@ -418,7 +438,7 @@ void DisplayPanel::HandleMouse(UINT msg, WPARAM wp, LPARAM lp) {
     RECT rc;
     GetClientRect(hwnd_, &rc);
     int cw = rc.right;
-    int ch = rc.bottom - kHintBarHeight;
+    int ch = rc.bottom;
     if (cw <= 0 || ch <= 0) return;
 
     RECT dst;
@@ -462,8 +482,16 @@ void DisplayPanel::SetCaptured(bool captured) {
     captured_ = captured;
     if (captured) {
         InstallKeyboardHook();
+        if (!hint_shown_once_) {
+            hint_shown_once_ = true;
+            capture_hint_visible_ = true;
+            capture_hint_start_ = GetTickCount();
+            if (hwnd_) SetTimer(hwnd_, kHintTimerId, kHintDurationMs, nullptr);
+        }
     } else {
         UninstallKeyboardHook();
+        capture_hint_visible_ = false;
+        if (hwnd_) KillTimer(hwnd_, kHintTimerId);
     }
     if (hwnd_) InvalidateRect(hwnd_, nullptr, FALSE);
 }
@@ -572,6 +600,15 @@ LRESULT CALLBACK DisplayPanel::WndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp
                 SetCursor(self->custom_cursor_);
                 return TRUE;
             }
+        }
+        break;
+
+    case WM_TIMER:
+        if (wp == kHintTimerId) {
+            KillTimer(hwnd, kHintTimerId);
+            self->capture_hint_visible_ = false;
+            InvalidateRect(hwnd, nullptr, FALSE);
+            return 0;
         }
         break;
 
