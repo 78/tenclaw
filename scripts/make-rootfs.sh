@@ -21,12 +21,16 @@ set -e
 ROOTFS_SIZE="20G"
 SUITE="bookworm"
 MIRROR="https://mirrors.ustc.edu.cn/debian"
+MIRROR_SECURITY="https://mirrors.ustc.edu.cn/debian-security"
+ROOT_PASSWORD="${ROOT_PASSWORD:-tenbox}"
+USER_NAME="${USER_NAME:-openclaw}"
+USER_PASSWORD="${USER_PASSWORD:-openclaw}"
 INCLUDE_PKGS="systemd-sysv,udev,dbus,sudo,\
 iproute2,iputils-ping,ifupdown,isc-dhcp-client,\
 ca-certificates,curl,wget,\
 procps,psmisc,\
 netcat-openbsd,net-tools,traceroute,dnsutils,\
-less,vim-tiny,bash-completion,\
+less,vim,bash-completion,\
 openssh-client,gnupg,apt-transport-https,\
 lsof,strace,sysstat,\
 kmod,pciutils,usbutils,\
@@ -245,10 +249,15 @@ if $EDIT_MODE; then
     touch "$CHECKPOINT_DIR/create_image.done"
     touch "$CHECKPOINT_DIR/debootstrap.done"
     
-    # If --from-step not specified, default to config_services (step 15)
+    # If --from-step not specified, default to config_services
     if [ "$FROM_STEP" -eq 0 ]; then
-        FROM_STEP=15
-        echo "  Defaulting to --from-step 15 (config_services)"
+        for i in "${!STEPS[@]}"; do
+            if [ "${STEPS[$i]}" = "config_services" ]; then
+                FROM_STEP=$i
+                break
+            fi
+        done
+        echo "  Defaulting to --from-step $FROM_STEP (config_services)"
     fi
 fi
 
@@ -358,6 +367,7 @@ do_debootstrap() {
         echo "  No cache found, downloading packages (first run)..."
         sudo debootstrap --include="$INCLUDE_PKGS" \
             --make-tarball="$CACHE_TAR" "$SUITE" "$WORK_DIR/tarball-tmp" "$MIRROR"
+        rm -rf "$WORK_DIR/tarball-tmp"
         sudo debootstrap --include="$INCLUDE_PKGS" \
             --unpack-tarball="$CACHE_TAR" "$SUITE" "$MOUNT_DIR" "$MIRROR"
     fi
@@ -391,21 +401,20 @@ PRC
 }
 
 do_config_basic() {
-    sudo chroot "$MOUNT_DIR" /bin/bash -e << 'EOF'
+    sudo chroot "$MOUNT_DIR" /bin/bash -e << EOF
 # Skip if already configured
-if id openclaw &>/dev/null; then
+if id $USER_NAME &>/dev/null; then
     echo "  Basic config already done"
     exit 0
 fi
 
-echo "root:tenbox" | chpasswd
+echo "root:$ROOT_PASSWORD" | chpasswd
 
-# Create openclaw user with sudo privileges
-useradd -m -s /bin/bash openclaw
-echo "openclaw:openclaw" | chpasswd
-usermod -aG sudo openclaw
-echo "openclaw ALL=(ALL:ALL) NOPASSWD: ALL" > /etc/sudoers.d/openclaw
-chmod 440 /etc/sudoers.d/openclaw
+useradd -m -s /bin/bash $USER_NAME
+echo "$USER_NAME:$USER_PASSWORD" | chpasswd
+usermod -aG sudo $USER_NAME
+echo "$USER_NAME ALL=(ALL:ALL) NOPASSWD: ALL" > /etc/sudoers.d/$USER_NAME
+chmod 440 /etc/sudoers.d/$USER_NAME
 
 echo "tenbox-vm" > /etc/hostname
 cat > /etc/hosts << 'HOSTS'
@@ -414,17 +423,28 @@ cat > /etc/hosts << 'HOSTS'
 ::1         localhost ip6-localhost ip6-loopback
 HOSTS
 echo "/dev/vda / ext4 defaults 0 1" > /etc/fstab
-
-cat > /etc/apt/sources.list << 'APT'
-deb https://mirrors.ustc.edu.cn/debian bookworm main contrib non-free non-free-firmware
-deb https://mirrors.ustc.edu.cn/debian bookworm-updates main contrib non-free non-free-firmware
-deb https://mirrors.ustc.edu.cn/debian-security bookworm-security main contrib non-free non-free-firmware
-APT
 EOF
 }
 
 do_apt_update() {
-    sudo chroot "$MOUNT_DIR" /bin/bash -e << 'EOF'
+    # Always write apt sources (ensures correct config even on resume)
+    sudo chroot "$MOUNT_DIR" /bin/bash -e << EOF
+rm -f /etc/apt/sources.list
+mkdir -p /etc/apt/sources.list.d
+cat > /etc/apt/sources.list.d/debian.sources << DEB822
+Types: deb
+URIs: $MIRROR
+Suites: $SUITE $SUITE-updates
+Components: main contrib non-free non-free-firmware
+Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
+
+Types: deb
+URIs: $MIRROR_SECURITY
+Suites: $SUITE-security
+Components: main contrib non-free non-free-firmware
+Signed-By: /usr/share/keyrings/debian-archive-keyring.gpg
+DEB822
+
 apt-get update
 update-ca-certificates --fresh 2>/dev/null || true
 EOF
@@ -521,7 +541,7 @@ EOF
 }
 
 do_config_chrome() {
-    sudo chroot "$MOUNT_DIR" /bin/bash -e << 'EOF'
+    sudo chroot "$MOUNT_DIR" /bin/bash -e << EOF
 # Skip if already configured
 if [ -f /etc/opt/chrome/policies/managed/tenbox_policy.json ]; then
     echo "  Chrome already configured"
@@ -548,22 +568,22 @@ cat > /etc/opt/chrome/policies/managed/tenbox_policy.json << 'CHROME'
     "HomepageLocation": "chrome://newtab"
 }
 CHROME
-mkdir -p /home/openclaw/.config/google-chrome
-touch "/home/openclaw/.config/google-chrome/First Run"
-chown -R openclaw:openclaw /home/openclaw/.config
+mkdir -p /home/$USER_NAME/.config/google-chrome
+touch "/home/$USER_NAME/.config/google-chrome/First Run"
+chown -R $USER_NAME:$USER_NAME /home/$USER_NAME/.config
 
 # Set Chrome as default browser
 update-alternatives --install /usr/bin/x-www-browser x-www-browser /usr/bin/google-chrome-stable 200
 update-alternatives --install /usr/bin/gnome-www-browser gnome-www-browser /usr/bin/google-chrome-stable 200
-mkdir -p /home/openclaw/.config
-cat > /home/openclaw/.config/mimeapps.list << 'MIME'
+mkdir -p /home/$USER_NAME/.config
+cat > /home/$USER_NAME/.config/mimeapps.list << 'MIME'
 [Default Applications]
 x-scheme-handler/http=google-chrome.desktop
 x-scheme-handler/https=google-chrome.desktop
 text/html=google-chrome.desktop
 application/xhtml+xml=google-chrome.desktop
 MIME
-chown -R openclaw:openclaw /home/openclaw/.config
+chown -R $USER_NAME:$USER_NAME /home/$USER_NAME/.config
 EOF
 }
 
@@ -622,7 +642,7 @@ do_install_nodejs() {
     fi
     sudo cp "$CACHE_NODESOURCE" "$MOUNT_DIR/tmp/nodesource_setup.sh"
     
-    sudo chroot "$MOUNT_DIR" /bin/bash -e << 'EOF'
+    sudo chroot "$MOUNT_DIR" /bin/bash -e << EOF
 if command -v node &>/dev/null && node --version | grep -q "v22"; then
     echo "  Node.js 22 already installed"
     exit 0
@@ -635,7 +655,7 @@ rm -f /tmp/nodesource_setup.sh
 # Configure npm to use Alibaba Cloud mirror
 npm config set registry https://registry.npmmirror.com --global
 echo "registry=https://registry.npmmirror.com" >> /etc/npmrc
-su - openclaw -c "npm config set registry https://registry.npmmirror.com"
+su - $USER_NAME -c "npm config set registry https://registry.npmmirror.com"
 EOF
 }
 
@@ -675,14 +695,13 @@ EOF
 }
 
 do_config_services() {
-    sudo chroot "$MOUNT_DIR" /bin/bash -e << 'EOF'
+    sudo chroot "$MOUNT_DIR" /bin/bash -e << EOF
 # Skip if already configured
 if [ -f /etc/systemd/system/serial-getty@ttyS0.service.d/autologin.conf ]; then
     echo "  Services already configured"
     exit 0
 fi
 
-# Allow openclaw to shutdown/reboot from GUI without password (polkit rules)
 mkdir -p /etc/polkit-1/rules.d
 cp /tmp/rootfs-services/50-openclaw-power.rules /etc/polkit-1/rules.d/
 
@@ -690,9 +709,9 @@ mkdir -p /etc/systemd/system/serial-getty@ttyS0.service.d
 cp /tmp/rootfs-services/serial-getty-autologin.conf /etc/systemd/system/serial-getty@ttyS0.service.d/autologin.conf
 
 mkdir -p /etc/lightdm/lightdm.conf.d
-cat > /etc/lightdm/lightdm.conf.d/50-autologin.conf << 'LDM'
+cat > /etc/lightdm/lightdm.conf.d/50-autologin.conf << LDM
 [Seat:*]
-autologin-user=openclaw
+autologin-user=$USER_NAME
 autologin-user-timeout=0
 autologin-session=xfce
 user-session=xfce
@@ -785,14 +804,33 @@ EOF
 do_verify_install() {
     sudo chroot "$MOUNT_DIR" /bin/bash -e << 'EOF'
 echo "Verifying installation..."
-ls -la /sbin/init
-echo "init OK: $(readlink -f /sbin/init)"
-echo "nc:   $(which nc 2>/dev/null || echo MISSING)"
-echo "free: $(which free 2>/dev/null || echo MISSING)"
-echo "ps:   $(which ps 2>/dev/null || echo MISSING)"
-echo "curl: $(which curl 2>/dev/null || echo MISSING)"
-echo "wget: $(which wget 2>/dev/null || echo MISSING)"
-echo "node: $(node --version 2>/dev/null || echo MISSING)"
+FAIL=0
+check() {
+    local label="$1"; shift
+    if "$@" &>/dev/null; then
+        printf "  ✓ %s\n" "$label"
+    else
+        printf "  ✗ %s\n" "$label"
+        FAIL=1
+    fi
+}
+
+check "init"              test -x /sbin/init
+check "systemd"           dpkg -s systemd
+check "xfce4"             dpkg -s xfce4
+check "lightdm"           dpkg -s lightdm
+check "google-chrome"     dpkg -s google-chrome-stable
+check "spice-vdagent"     dpkg -s spice-vdagent
+check "qemu-guest-agent"  dpkg -s qemu-guest-agent
+check "pulseaudio"        dpkg -s pulseaudio
+check "node"              command -v node
+check "curl"              command -v curl
+check "wget"              command -v wget
+check "vim"               command -v vim
+
+if [ "$FAIL" -ne 0 ]; then
+    echo "WARNING: some components are missing!"
+fi
 EOF
 }
 
@@ -801,9 +839,12 @@ do_cleanup_chroot() {
     sudo chroot "$MOUNT_DIR" /bin/bash -e << 'EOF'
 apt-get clean
 rm -rf /var/lib/apt/lists/*
+rm -rf /var/log/*.log /var/log/apt/* /var/log/dpkg.log
 EOF
     
     sudo rm -f "$MOUNT_DIR/usr/sbin/policy-rc.d"
+    sudo rm -rf "$MOUNT_DIR/tmp/rootfs-scripts" "$MOUNT_DIR/tmp/rootfs-services"
+    sudo rm -f "$MOUNT_DIR/etc/resolv.conf"
     
     # Unmount apt cache
     mountpoint -q "$MOUNT_DIR/var/cache/apt/archives" 2>/dev/null && \
@@ -869,5 +910,5 @@ rm -f "$CHECKPOINT_DIR"/*.done
 
 echo ""
 echo "============================================"
-echo "Done: $OUTPUT ($(du -h "$OUTPUT" | cut -f1))"
+echo "Done: $OUTPUT ($(ls -lh "$OUTPUT" | awk '{print $5}'))"
 echo "============================================"
