@@ -43,7 +43,8 @@ enum CmdId : UINT {
     IDM_EDIT          = 1014,
     IDM_DELETE        = 1015,
     IDM_SHARED_FOLDERS = 1016,
-    IDM_WEBSITE       = 1020,
+    IDM_VIEW_TOOLBAR   = 1017,
+    IDM_WEBSITE        = 1020,
     IDM_CHECK_UPDATE  = 1021,
     IDM_ABOUT         = 1022,
 };
@@ -201,7 +202,7 @@ static ATOM RegisterMainClass(HINSTANCE hinst) {
 
 // ── Menu building ──
 
-static HMENU BuildMenuBar() {
+static HMENU BuildMenuBar(bool show_toolbar) {
     using S = i18n::S;
     HMENU bar = CreateMenu();
 
@@ -219,7 +220,14 @@ static HMENU BuildMenuBar() {
     AppendMenuA(vm_menu, MF_STRING, IDM_STOP,     i18n::tr(S::kMenuStop));
     AppendMenuA(vm_menu, MF_STRING, IDM_REBOOT,   i18n::tr(S::kMenuReboot));
     AppendMenuA(vm_menu, MF_STRING, IDM_SHUTDOWN, i18n::tr(S::kMenuShutdown));
+    AppendMenuA(vm_menu, MF_SEPARATOR, 0, nullptr);
+    AppendMenuA(vm_menu, MF_STRING, IDM_SHARED_FOLDERS, i18n::tr(S::kToolbarSharedFolders));
     AppendMenuA(bar, MF_POPUP, reinterpret_cast<UINT_PTR>(vm_menu), i18n::tr(S::kMenuVm));
+
+    HMENU view_menu = CreatePopupMenu();
+    AppendMenuA(view_menu, MF_STRING | (show_toolbar ? MF_CHECKED : MF_UNCHECKED),
+               IDM_VIEW_TOOLBAR, i18n::tr(S::kMenuViewToolbar));
+    AppendMenuA(bar, MF_POPUP, reinterpret_cast<UINT_PTR>(view_menu), i18n::tr(S::kMenuView));
 
     HMENU help_menu = CreatePopupMenu();
     AppendMenuA(help_menu, MF_STRING, IDM_WEBSITE,      i18n::tr(S::kMenuWebsite));
@@ -334,10 +342,14 @@ static void ResizeWindowForDisplay(Impl* p, uint32_t vm_width, uint32_t vm_heigh
     p->last_sent_display_w = vm_width;
     p->last_sent_display_h = vm_height;
 
-    RECT tbr, sbr;
-    GetWindowRect(p->toolbar, &tbr);
+    int tb_h = 0;
+    if (IsWindowVisible(p->toolbar)) {
+        RECT tbr;
+        GetWindowRect(p->toolbar, &tbr);
+        tb_h = tbr.bottom - tbr.top;
+    }
+    RECT sbr;
     GetWindowRect(p->statusbar, &sbr);
-    int tb_h = tbr.bottom - tbr.top;
     int sb_h = sbr.bottom - sbr.top;
 
     RECT tab_padding = {0, 0, 100, 100};
@@ -386,10 +398,13 @@ static void LayoutControls(Impl* p) {
     GetClientRect(p->hwnd, &rc);
     int cw = rc.right, ch = rc.bottom;
 
-    SendMessage(p->toolbar, TB_AUTOSIZE, 0, 0);
-    RECT tbr;
-    GetWindowRect(p->toolbar, &tbr);
-    int tb_h = tbr.bottom - tbr.top;
+    int tb_h = 0;
+    if (IsWindowVisible(p->toolbar)) {
+        SendMessage(p->toolbar, TB_AUTOSIZE, 0, 0);
+        RECT tbr;
+        GetWindowRect(p->toolbar, &tbr);
+        tb_h = tbr.bottom - tbr.top;
+    }
 
     SendMessage(p->statusbar, WM_SIZE, 0, 0);
     RECT sbr;
@@ -678,6 +693,19 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
             ShowSharedFoldersDialog(hwnd, shell->manager_, vm_id);
             return 0;
         }
+        case IDM_VIEW_TOOLBAR: {
+            auto& show = shell->manager_.app_settings().show_toolbar;
+            show = !show;
+            ShowWindow(p->toolbar, show ? SW_SHOW : SW_HIDE);
+            HMENU view_menu = GetSubMenu(p->menu_bar, 2);
+            if (view_menu) {
+                CheckMenuItem(view_menu, IDM_VIEW_TOOLBAR,
+                    MF_BYCOMMAND | (show ? MF_CHECKED : MF_UNCHECKED));
+            }
+            shell->manager_.SaveAppSettings();
+            LayoutControls(p);
+            return 0;
+        }
         case IDM_EDIT: {
             if (p->selected_index < 0 ||
                 p->selected_index >= static_cast<int>(p->records.size()))
@@ -753,6 +781,42 @@ static LRESULT CALLBACK MainWndProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
         auto* dis = reinterpret_cast<DRAWITEMSTRUCT*>(lp);
         if (p->vm_listbox.HandleDrawItem(dis, p->records, p->ui_font))
             return TRUE;
+        break;
+    }
+
+    case WM_CONTEXTMENU: {
+        // Right-click on VM listbox: show VM menu only when clicking on the selected VM
+        if (p && reinterpret_cast<HWND>(wp) == p->vm_listbox.handle() &&
+            p->selected_index >= 0 && p->selected_index < static_cast<int>(p->records.size())) {
+            int x = GET_X_LPARAM(lp);
+            int y = GET_Y_LPARAM(lp);
+            int idx = -1;
+            if (x != -1 && y != -1) {
+                POINT pt = {x, y};
+                ScreenToClient(p->vm_listbox.handle(), &pt);
+                DWORD hit = static_cast<DWORD>(SendMessage(p->vm_listbox.handle(),
+                    LB_ITEMFROMPOINT, 0, MAKELPARAM(pt.x, pt.y)));
+                if (HIWORD(hit) == 0 && LOWORD(hit) == static_cast<UINT>(p->selected_index)) {
+                    idx = p->selected_index;
+                }
+            } else {
+                idx = p->selected_index;  // Keyboard (Shift+F10): use current selection
+            }
+            if (idx >= 0) {
+                HMENU vm_menu = GetSubMenu(p->menu_bar, 1);
+                if (vm_menu) {
+                    if (x == -1 && y == -1) {
+                        RECT rc;
+                        GetWindowRect(p->vm_listbox.handle(), &rc);
+                        x = (rc.left + rc.right) / 2;
+                        y = (rc.top + rc.bottom) / 2;
+                    }
+                    TrackPopupMenuEx(vm_menu, TPM_LEFTALIGN | TPM_TOPALIGN | TPM_LEFTBUTTON,
+                        x, y, hwnd, nullptr);
+                }
+            }
+            return 0;
+        }
         break;
     }
 
@@ -857,7 +921,7 @@ Win32UiShell::Win32UiShell(ManagerService& manager)
     int h = (geo.height > 0) ? geo.height : 680;
 
     i18n::InitLanguage();
-    impl_->menu_bar = BuildMenuBar();
+    impl_->menu_bar = BuildMenuBar(manager_.app_settings().show_toolbar);
 
     impl_->hwnd = CreateWindowExA(0, kWndClass, i18n::tr(i18n::S::kAppTitle),
         WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
@@ -870,7 +934,10 @@ Win32UiShell::Win32UiShell(ManagerService& manager)
 
     AddClipboardFormatListener(impl_->hwnd);
 
-    impl_->toolbar   = CreateToolbar(impl_->hwnd, hinst);
+    impl_->toolbar = CreateToolbar(impl_->hwnd, hinst);
+    if (!manager_.app_settings().show_toolbar) {
+        ShowWindow(impl_->toolbar, SW_HIDE);
+    }
     impl_->statusbar = CreateWindowExA(0, STATUSCLASSNAMEA, nullptr,
         WS_CHILD | WS_VISIBLE | SBARS_SIZEGRIP,
         0, 0, 0, 0, impl_->hwnd,

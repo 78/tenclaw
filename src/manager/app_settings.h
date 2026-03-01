@@ -19,6 +19,7 @@ struct WindowGeometry {
 struct AppSettings {
     WindowGeometry window;
     std::vector<std::string> vm_paths;
+    bool show_toolbar = true;
 };
 
 AppSettings LoadSettings(const std::string& data_dir);

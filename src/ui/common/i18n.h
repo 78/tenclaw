@@ -128,6 +128,10 @@ enum class S {
     kDisplayHintCaptured,
     kDisplayHintNormal,
 
+    // View menu
+    kMenuView,
+    kMenuViewToolbar,
+
     // Help menu
     kMenuHelp,
     kMenuWebsite,

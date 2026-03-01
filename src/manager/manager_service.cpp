@@ -308,18 +308,23 @@ bool ManagerService::StartVm(const std::string& vm_id, std::string* error) {
     vm.runtime.pipe_name = "tenbox_vm_" + vm.spec.vm_id;
     const std::string cmd = BuildRuntimeCommand(runtime_exe_path_, vm.spec, vm.runtime.pipe_name);
 
-    STARTUPINFOA si{};
+    // Convert UTF-8 command line to wide string (UTF-16) for Unicode support
+    int wide_len = MultiByteToWideChar(CP_UTF8, 0, cmd.c_str(), -1, nullptr, 0);
+    std::vector<wchar_t> wide_cmd(wide_len);
+    MultiByteToWideChar(CP_UTF8, 0, cmd.c_str(), -1, wide_cmd.data(), wide_len);
+
+    STARTUPINFOW si{};
     PROCESS_INFORMATION pi{};
     si.cb = sizeof(si);
 
     // Redirect runtime stdout/stderr to a log file in the VM directory
     HANDLE hLog = INVALID_HANDLE_VALUE;
     if (!vm.spec.vm_dir.empty()) {
-        std::string log_path = (fs::path(vm.spec.vm_dir) / "runtime.log").string();
+        std::wstring log_path = (fs::path(vm.spec.vm_dir) / "runtime.log").wstring();
         SECURITY_ATTRIBUTES sa{};
         sa.nLength = sizeof(sa);
         sa.bInheritHandle = TRUE;
-        hLog = CreateFileA(log_path.c_str(), GENERIC_WRITE, FILE_SHARE_READ,
+        hLog = CreateFileW(log_path.c_str(), GENERIC_WRITE, FILE_SHARE_READ,
                            &sa, CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
         if (hLog != INVALID_HANDLE_VALUE) {
             si.dwFlags |= STARTF_USESTDHANDLES;
@@ -329,12 +334,9 @@ bool ManagerService::StartVm(const std::string& vm_id, std::string* error) {
         }
     }
 
-    std::vector<char> cmdline(cmd.begin(), cmd.end());
-    cmdline.push_back('\0');
-
-    BOOL ok = CreateProcessA(
+    BOOL ok = CreateProcessW(
             nullptr,
-            cmdline.data(),
+            wide_cmd.data(),
             nullptr,
             nullptr,
             hLog != INVALID_HANDLE_VALUE ? TRUE : FALSE,

@@ -88,7 +88,9 @@ static const char* kStringsEn[] = {
     "CPU / Memory changes require VM to be stopped",  // kCpuMemoryChangeWarning
     "Full input capture (system keys) | Press Right Alt to release",  // kDisplayHintCaptured
     "Click to capture system keys",  // kDisplayHintNormal
-    "Help",                                  // kMenuHelp
+    "View",                                 // kMenuView
+    "Toolbar",                              // kMenuViewToolbar
+    "Help",                                 // kMenuHelp
     "Website",                               // kMenuWebsite
     "Check for Updates",                     // kMenuCheckUpdate
     "About...",                              // kMenuAbout
@@ -185,7 +187,9 @@ static const char* kStringsZhCN[] = {
     "无",                                // kNone
     "更改 CPU/内存需要先停止虚拟机",     // kCpuMemoryChangeWarning
     "已捕获全部输入（含系统键）| 按右 Alt 释放",  // kDisplayHintCaptured
-    "点击以捕获系统键",  // kDisplayHintNormal
+    "点击以捕获系统键",                       // kDisplayHintNormal
+    "视图",                                  // kMenuView
+    "工具栏",                                // kMenuViewToolbar
     "帮助",                                  // kMenuHelp
     "官方网站",                              // kMenuWebsite
     "检查更新",                              // kMenuCheckUpdate
